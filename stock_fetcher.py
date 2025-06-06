@@ -89,7 +89,7 @@ def fetch_and_save(symbols, out_folder, start, end):
 if __name__ == "__main__":
     START = "2010-01-01"
     END   = datetime.today().strftime("%Y-%m-%d")
-    BASE  = "/Users/admin/Desktop/financial_ai_model/market_data"
+    BASE  = "/Users/admin/FinAi/market_data"
 
     # define train vs validation index keys
     TRAIN_IDX = ["sp500", "nasdaq100"]
