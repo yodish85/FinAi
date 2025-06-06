@@ -369,7 +369,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     x = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         
     # Save the model with a timestamped filename
-    model.save(f'/Users/admin/Desktop/financial_ai_model/{x}_model.keras')
+    model.save(f'/Users/admin/FinAi/{x}_model.keras')
     actions = []
     for probs in pred_test:
         margin_pred_classes = get_action_from_probs(probs, margin_threshold=0, prob_threshold=0)
@@ -560,7 +560,7 @@ if __name__ == "__main__":
 
     if not loadData:
         # training data
-        directory = '/Users/admin/Desktop/financial_ai_model/market_data/train'
+        directory = '/Users/admin/FinAi/market_data/train'
         files = os.listdir(directory)
         # Get tickers from training
         train_symbols = get_symbols_from_folder(directory)
@@ -569,14 +569,14 @@ if __name__ == "__main__":
             extract_features_with_fft.extract_features_with_fft(train_symbols, directory, True, 'train', days_to_process)
         
         # validation data
-        directory = '/Users/admin/Desktop/financial_ai_model/market_data/validation'
+        directory = '/Users/admin/FinAi/market_data/validation'
         # Get tickers from validation directory
         val_symbols   = get_symbols_from_folder(directory)
 
         test_data, test_labels, test_symbols = extract_features_with_fft.extract_features_with_fft(val_symbols, directory, True, 'test', days_to_process)
     else:
         # or load data
-        directory = "/Users/admin/Desktop/financial_ai_model/train-val-data"
+        directory = "/Users/admin/FinAi/market_data/train-val-data"
         train_data, train_labels, test_data, test_labels = load_datasets(directory)
         
     
