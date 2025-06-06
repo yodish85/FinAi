@@ -168,6 +168,14 @@ if __name__ == "__main__":
     # Assign bar colors for above threshold predictions
     bar_colors_th = ['green' if cls == 2 else 'red' for cls in filtered_classes_th]
     
+    # Separate symbols based on prediction class
+    buy_symbols = [sym for sym, cls in zip(filtered_symbols_th, filtered_classes_th) if cls == 2]
+    sell_symbols = [sym for sym, cls in zip(filtered_symbols_th, filtered_classes_th) if cls != 2]
+    
+    # Print buy/sell symbol lists
+    print("Buy symbols:", ", ".join(buy_symbols))
+    print("Sell/Short symbols:", ", ".join(sell_symbols))
+
     # Plot histogram with symbols above threshold
     fig, ax = plt.subplots(figsize=(16, 6))
     x_th = np.arange(len(filtered_confidences_th))
