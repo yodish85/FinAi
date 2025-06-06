@@ -68,7 +68,7 @@ if __name__ == "__main__":
     all_symbols = np.concatenate((tr_symbols, val_symbols), axis=0)
 
     # 3. Load latest model
-    model = load_model('/Users/admin/FinAi/market_data')
+    model = load_model('/Users/admin/FinAi')
     
     # 4. Run model with latest data
     pred_test = model.predict(all_data)
