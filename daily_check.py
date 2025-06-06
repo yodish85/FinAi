@@ -37,14 +37,14 @@ if __name__ == "__main__":
     
     # 1.Fetch new day's stocks data
     # To run:
-    fetcher = StockFetcher(base_path="/Users/admin/Desktop/financial_ai_model/market_data")
+    fetcher = StockFetcher(base_path="/Users/admin/FinAi/market_data")
     fetcher.run()
     
     days_to_process = 230 # need at least 200 days to compute the moving avg + 30 to compute the last day's prediction
     doBalance = False
 
     # 2.Process data to extract features
-    directory = '/Users/admin/Desktop/financial_ai_model/market_data/train'
+    directory = '/Users/admin/FinAi/market_data/train'
     files = os.listdir(directory)
     # Get tickers from training
     train_symbols = training_model.get_symbols_from_folder(directory)
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     tr_data, tr_labels, tr_symbols =  \
         extract_features_with_fft.extract_features_with_fft(train_symbols, directory, True, 'daily', days_to_process, doBalance)
         
-    directory = '/Users/admin/Desktop/financial_ai_model/market_data/validation'
+    directory = '/Users/admin/FinAi/market_data/validation'
     files = os.listdir(directory)
     # Get tickers from training
     val_symbols = training_model.get_symbols_from_folder(directory)
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     all_symbols = np.concatenate((tr_symbols, val_symbols), axis=0)
 
     # 3. Load latest model
-    model = load_model('/Users/admin/Desktop/financial_ai_model')
+    model = load_model('/Users/admin/FinAi/market_data')
     
     # 4. Run model with latest data
     pred_test = model.predict(all_data)
