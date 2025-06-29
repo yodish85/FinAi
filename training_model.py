@@ -459,26 +459,13 @@ def get_action_from_probs(probs, margin_threshold=0.3, prob_threshold=0.9):
         return 0  # Not confident enough: treat as 'hold'
 
 
-def load_model(path, train_data, train_labels, test_data, test_labels):
-    
-    # load model
-    def load_model(path):
-        # Search for the latest .keras or .h5 model file
-        model_files = [os.path.join(path, f) for f in os.listdir(path) 
-                       if f.endswith(".keras") or f.endswith(".h5")]
-        
-        if not model_files:
-            raise FileNotFoundError("No .keras or .h5 model found in path.")
+def load_and_run_model(path, train_data, train_labels, test_data, test_labels):
+    import daily_check
 
-        latest_model = max(model_files, key=os.path.getmtime)
-        model = tf.keras.models.load_model(
-        latest_model,
-        custom_objects={"Attention": Attention}
-        )
-        print(f"Loaded model from: {latest_model}")
-        return model
-    
-    model = load_model(path)
+    from daily_check import load_model
+    importlib.reload(daily_check)  # Reload the module, not the function
+    model = daily_check.load_model(path)
+
     # Evaluate on training
     scores = model.evaluate(train_data, train_labels, verbose=0)
     print(f"Train Accuracy: {scores[1]*100:.2f}% | Error: {100 - scores[1]*100:.2f}%")
@@ -641,5 +628,5 @@ if __name__ == "__main__":
     if not loadModel:
         train_model(train_data, train_labels, test_data, test_labels)
     else:
-        load_model('/Users/admin/FinAi', \
+        load_and_run_model('/Users/admin/FinAi', \
                   train_data, train_labels, test_data, test_labels)
