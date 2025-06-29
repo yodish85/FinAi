@@ -192,31 +192,32 @@ def residual_conv_block(x, filters=16, kernel_size=5, dropout_rate=0.3):
 def build_model(input_shape, num_classes=3):
     inputs = tf.keras.Input(shape=input_shape)
     
-    # Residual Conv block
-    x = residual_conv_block(inputs, filters=32, kernel_size=5)
+    x = tf.keras.layers.GaussianNoise(0.1)(inputs)
+    x = residual_conv_block(x, filters=32, kernel_size=5)
+    x = tf.keras.layers.SpatialDropout1D(0.3)(x)
 
-    # BiLSTM
+    # GRU instead of LSTM
     x = tf.keras.layers.Bidirectional(
-        tf.keras.layers.LSTM(64, return_sequences=False, dropout=0.3, recurrent_dropout=0.3,
-             kernel_regularizer=tf.keras.regularizers.l2(0.001))
+        tf.keras.layers.GRU(
+            32, return_sequences=False,
+            dropout=0.3, recurrent_dropout=0.3,
+            kernel_regularizer=tf.keras.regularizers.l2(0.003)
+        )
     )(x)
-    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.LayerNormalization()(x)
 
-    # Attention
-    #x = Attention()(x)
+    # Dense + LeakyReLU
+    x = tf.keras.layers.Dense(48, kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
+    x = tf.keras.layers.LeakyReLU(alpha=0.01)(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
 
-    # Dense layers
-    x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    x = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    x = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    # Output
+    x = tf.keras.layers.Dense(24, kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
+    x = tf.keras.layers.LeakyReLU(alpha=0.01)(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
+
     outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
+    return tf.keras.Model(inputs, outputs)
 
-    model = tf.keras.Model(inputs, outputs)
-    return model
 
 def compute_fft(feature_data):
     fft_result = np.fft.fft(feature_data)
@@ -262,7 +263,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     filtered_test_labels = test_labels[val_shuffle_idx]
     
     # --- Dataset construction ---
-    batch_size = 64
+    batch_size = 256
     
     train_ds = tf.data.Dataset.from_tensor_slices((filtered_train_data, filtered_train_labels)) \
         .shuffle(buffer_size=len(train_data)) \
@@ -314,7 +315,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=100,
+        epochs=500,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         class_weight=class_weights,
@@ -386,7 +387,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     plt.show()
     
     # --- Settings ---
-    threshold = 0.67
+    threshold = 0.8
     margin_threshold = 0.2
     
     # --- Compute top-2 margins ---
@@ -411,7 +412,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     print("Confusion Matrix:")
     cm = confusion_matrix(confident_trues, confident_preds)
     print(cm)
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Hold", "Buy", "Sell"], yticklabels=["Hold", "Buy", "Sell"])
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Sell", "Buy"], yticklabels=["Sell", "Buy"])
     plt.xlabel('Predicted')
     plt.ylabel('True')
     plt.title('Confusion Matrix')
@@ -461,7 +462,23 @@ def get_action_from_probs(probs, margin_threshold=0.3, prob_threshold=0.9):
 def load_model(path, train_data, train_labels, test_data, test_labels):
     
     # load model
-    model = tf.keras.models.load_model(path)
+    def load_model(path):
+        # Search for the latest .keras or .h5 model file
+        model_files = [os.path.join(path, f) for f in os.listdir(path) 
+                       if f.endswith(".keras") or f.endswith(".h5")]
+        
+        if not model_files:
+            raise FileNotFoundError("No .keras or .h5 model found in path.")
+
+        latest_model = max(model_files, key=os.path.getmtime)
+        model = tf.keras.models.load_model(
+        latest_model,
+        custom_objects={"Attention": Attention}
+        )
+        print(f"Loaded model from: {latest_model}")
+        return model
+    
+    model = load_model(path)
     # Evaluate on training
     scores = model.evaluate(train_data, train_labels, verbose=0)
     print(f"Train Accuracy: {scores[1]*100:.2f}% | Error: {100 - scores[1]*100:.2f}%")
@@ -492,13 +509,54 @@ def load_model(path, train_data, train_labels, test_data, test_labels):
     for probs in pred_test:
         margin_pred_classes = get_action_from_probs(probs, margin_threshold=0, prob_threshold=0)
         actions.append([margin_pred_classes])
-        print("Action:", ["HOLD", "BUY", "SELL"][margin_pred_classes])
+        #print("Action:", ["HOLD", "BUY", "SELL"][margin_pred_classes])
         
     actions = np.array(actions)  # optional: convert to NumPy array
     
-    true_classes = np.argmax(test_labels, axis=1)
-    diff =  actions[indices_1_or_2,0] - true_classes[indices_1_or_2]
-    plt.scatter(np.arange(len(diff)), diff, label='Diff', s=10)
+    # --- Settings ---
+    threshold = 0.7
+    margin_threshold = 0.2
+    
+    # --- Compute top-2 margins ---
+    top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
+    margins = top2_sorted[:, 1] - top2_sorted[:, 0]
+    
+    # --- Get confident prediction indexes ---
+    confident_idxs = np.where((np.max(pred_test, axis=1) > threshold) & (margins > margin_threshold))[0]
+    
+    # --- Extract predicted and true classes for confident samples ---
+    confident_preds = np.argmax(pred_test[confident_idxs], axis=1)
+    confident_trues = np.argmax(test_labels[confident_idxs], axis=1)
+    
+    # Filter out neutral class (label=0)
+    mask = (confident_trues != 0) & (confident_preds != 0)
+
+    confident_preds = confident_preds[mask]
+    confident_trues = confident_trues[mask]
+
+    diff_pred = confident_preds - confident_trues
+
+    print("Confusion Matrix:")
+    cm = confusion_matrix(confident_trues, confident_preds)
+    print(cm)
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Sell", "Buy"], yticklabels=["Sell", "Buy"])
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Confusion Matrix')
+    plt.show()
+    
+    # --- Plot prediction vs actual ---
+    plt.figure(figsize=(12, 4))
+    plt.plot(confident_preds, label='Predicted', marker='o', linestyle='--')
+    plt.plot(confident_trues, label='True', marker='x', linestyle=':')
+    plt.legend()
+    plt.title('Confident Predictions vs Actual Labels')
+    plt.xlabel('Instance Index')
+    plt.ylabel('Class')
+    plt.grid(True)
+    plt.show()
+    
+    plt.scatter(np.arange(len(diff_pred)), diff_pred, label='Diff', s=10)
     plt.legend()
     plt.title("Predicted vs Actual Classes")
     plt.show()
@@ -555,7 +613,7 @@ def get_symbols_from_folder(base_dir):
 if __name__ == "__main__":
     
     loadData = True
-    loadModel = False
+    loadModel = True
     days_to_process = []
 
     if not loadData:
@@ -576,12 +634,12 @@ if __name__ == "__main__":
         test_data, test_labels, test_symbols = extract_features_with_fft.extract_features_with_fft(val_symbols, directory, True, 'test', days_to_process)
     else:
         # or load data
-        directory = "/Users/admin/FinAi/market_data/train-val-data"
+        directory = "/Users/admin/FinAi/train-val-data"
         train_data, train_labels, test_data, test_labels = load_datasets(directory)
         
     
     if not loadModel:
         train_model(train_data, train_labels, test_data, test_labels)
     else:
-        load_model('20250427_224542_model.keras', \
+        load_model('/Users/admin/FinAi', \
                   train_data, train_labels, test_data, test_labels)
