@@ -192,32 +192,31 @@ def residual_conv_block(x, filters=16, kernel_size=5, dropout_rate=0.3):
 def build_model(input_shape, num_classes=3):
     inputs = tf.keras.Input(shape=input_shape)
     
-    x = tf.keras.layers.GaussianNoise(0.1)(inputs)
-    x = residual_conv_block(x, filters=32, kernel_size=5)
-    x = tf.keras.layers.SpatialDropout1D(0.3)(x)
+    # Residual Conv block
+    x = residual_conv_block(inputs, filters=32, kernel_size=5)
 
-    # GRU instead of LSTM
+    # BiLSTM
     x = tf.keras.layers.Bidirectional(
-        tf.keras.layers.GRU(
-            32, return_sequences=False,
-            dropout=0.3, recurrent_dropout=0.3,
-            kernel_regularizer=tf.keras.regularizers.l2(0.003)
-        )
+        tf.keras.layers.LSTM(64, return_sequences=False, dropout=0.3, recurrent_dropout=0.3,
+             kernel_regularizer=tf.keras.regularizers.l2(0.001))
     )(x)
-    x = tf.keras.layers.LayerNormalization()(x)
+    x = tf.keras.layers.BatchNormalization()(x)
 
-    # Dense + LeakyReLU
-    x = tf.keras.layers.Dense(48, kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.LeakyReLU(alpha=0.01)(x)
-    x = tf.keras.layers.Dropout(0.4)(x)
+    # Attention
+    #x = Attention()(x)
 
-    x = tf.keras.layers.Dense(24, kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.LeakyReLU(alpha=0.01)(x)
-    x = tf.keras.layers.Dropout(0.4)(x)
-
+    # Dense layers
+    x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    # Output
     outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
-    return tf.keras.Model(inputs, outputs)
 
+    model = tf.keras.Model(inputs, outputs)
+    return model
 
 def compute_fft(feature_data):
     fft_result = np.fft.fft(feature_data)
@@ -263,7 +262,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     filtered_test_labels = test_labels[val_shuffle_idx]
     
     # --- Dataset construction ---
-    batch_size = 256
+    batch_size = 64
     
     train_ds = tf.data.Dataset.from_tensor_slices((filtered_train_data, filtered_train_labels)) \
         .shuffle(buffer_size=len(train_data)) \
@@ -501,7 +500,7 @@ def load_and_run_model(path, train_data, train_labels, test_data, test_labels):
     actions = np.array(actions)  # optional: convert to NumPy array
     
     # --- Settings ---
-    threshold = 0.7
+    threshold = 0.75
     margin_threshold = 0.2
     
     # --- Compute top-2 margins ---

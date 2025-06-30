@@ -82,7 +82,7 @@ if __name__ == "__main__":
     actions = np.array(actions)  # optional: convert to NumPy array
         
     # --- Settings ---
-    threshold = 0.7 # new model 2906
+    threshold = 0.8 # new model 2906
     margin_threshold = 0.2
     
     # --- Compute top-2 margins ---
