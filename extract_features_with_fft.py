@@ -146,18 +146,21 @@ def plot_labels(df, buy_indices, sell_indices, price_col='Close', title=None, ma
     plt.legend()
     plt.grid(True)
     plt.show()
-    
+
 def detect_local_extrema_labels(
     prices,
     gain_threshold=0.05,
+    time_threshold=10,
     min_distance=1,
     smooth=True,
     ma_window=20,
     plot=False
 ):
     """
-    Detects local minima and maxima, then labels them alternately as buy/sell points.
-    Keeps only the ones with gain above threshold.
+    Detects buy/sell signals based on local minima/maxima and future gain/drop within a time window.
+
+    - A local minimum is labeled as a BUY if price rises ≥ gain_threshold within time_threshold steps.
+    - A local maximum is labeled as a SELL if price drops ≥ gain_threshold within time_threshold steps.
     """
 
     import numpy as np
@@ -177,47 +180,52 @@ def detect_local_extrema_labels(
     peak_prominence = 0.005 * prices.max()
     sell_idxs, _ = find_peaks(prices, distance=min_distance, prominence=peak_prominence)
     buy_idxs, _ = find_peaks(-prices, distance=min_distance, prominence=peak_prominence)
-    
+
+    # Plot BEFORE filtering
     if plot:
         plt.figure(figsize=(12, 6))
         plt.plot(prices, label='Price')
-        plt.plot(buy_idxs, prices[buy_idxs], 'g^', label='Buy', markersize=10)
-        plt.plot(sell_idxs, prices[sell_idxs], 'rv', label='Sell', markersize=10)
+        plt.plot(buy_idxs, prices[buy_idxs], 'g^', label='Buy Candidates', markersize=10)
+        plt.plot(sell_idxs, prices[sell_idxs], 'rv', label='Sell Candidates', markersize=10)
         plt.legend()
         plt.title('Buy/Sell Points Before Filtering')
+        plt.grid(True)
         plt.show()
-        
-    extrema = sorted(
-        [(idx, 'buy') for idx in buy_idxs] +
-        [(idx, 'sell') for idx in sell_idxs],
-        key=lambda x: x[0]
-    )
 
-    # Alternate: buy -> sell -> buy -> ...
     filtered_buys = []
     filtered_sells = []
 
-    i = 0
-    while i < len(extrema) - 1:
-        curr_idx, curr_type = extrema[i]
-        next_idx, next_type = extrema[i + 1]
+    # Evaluate buy candidates
+    for idx in buy_idxs:
+        end = min(idx + time_threshold + 1, len(prices))
+        future_window = prices[idx+1:end]
+        if len(future_window) == 0:
+            continue
+        future_gain = (future_window - prices[idx]) / prices[idx]
+        if np.any(future_gain >= gain_threshold):
+            filtered_buys.append(idx)
 
-        if curr_type == 'buy' and next_type == 'sell':
-            gain = (prices[next_idx] - prices[curr_idx]) / prices[curr_idx]
-            if gain >= gain_threshold:
-                filtered_buys.append(curr_idx)
-                filtered_sells.append(next_idx)
-            i += 2  # Skip the pair
-        else:
-            i += 1  # Skip unmatched or out-of-sequence points
+    # Evaluate sell candidates
+    for idx in sell_idxs:
+        end = min(idx + time_threshold + 1, len(prices))
+        future_window = prices[idx+1:end]
+        if len(future_window) == 0:
+            continue
+        future_drop = (prices[idx] - future_window) / prices[idx]
+        if np.any(future_drop >= gain_threshold):
+            filtered_sells.append(idx)
 
+    # Plot AFTER filtering
     if plot:
-        plt.figure(figsize=(12, 5))
+        plt.figure(figsize=(12, 6))
         plt.plot(prices, label="Price")
-        plt.plot(filtered_buys, prices[filtered_buys], 'g^', label="Buy", markersize=10)
-        plt.plot(filtered_sells, prices[filtered_sells], 'rv', label="Sell", markersize=10)
-        plt.title("Local Minima/Maxima with Gain Threshold")
+        if filtered_buys:
+            plt.plot(filtered_buys, prices[filtered_buys], 'g^', label="Buy Signals", markersize=10)
+        if filtered_sells:
+            plt.plot(filtered_sells, prices[filtered_sells], 'rv', label="Sell Signals", markersize=10)
+        plt.title(f"Filtered Buy/Sell Signals (Gain ≥ {gain_threshold*100:.1f}%, within {time_threshold} steps)")
         plt.legend()
+        plt.grid(True)
         plt.show()
 
     return np.array(filtered_buys, dtype=int), np.array(filtered_sells, dtype=int)
@@ -415,6 +423,7 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
         buy_peaks, sell_peaks = detect_local_extrema_labels(
             df_tmp,
             gain_threshold=0.1,
+            time_threshold=days,
             min_distance=1,
             smooth=True,
             ma_window=20,
