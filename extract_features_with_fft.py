@@ -230,6 +230,85 @@ def detect_local_extrema_labels(
 
     return np.array(filtered_buys, dtype=int), np.array(filtered_sells, dtype=int)
 
+from scipy.signal import argrelextrema
+
+def find_confirmed_local_extrema_independent(
+    close,
+    order=5,
+    min_price_change=0.01,
+    min_distance=5,
+    plot=False
+):
+    """
+    Identifies significant local minima (buy) and maxima (sell) independently.
+    Uses max/min neighbor values to determine significance instead of mean.
+
+    Parameters:
+        close (pd.Series or np.ndarray): Closing prices.
+        order (int): Points on each side for local extrema.
+        min_price_change (float): Required % diff between peak and neighbor min/max.
+        min_distance (int): Min index distance between same-type extrema.
+        plot (bool): Whether to display a plot.
+
+    Returns:
+        (np.ndarray, np.ndarray): Buy (minima) and Sell (maxima) indices.
+    """
+    if isinstance(close, np.ndarray):
+        close = pd.Series(close)
+
+    close_values = close.values
+    local_min = argrelextrema(close_values, np.less_equal, order=order)[0]
+    local_max = argrelextrema(close_values, np.greater_equal, order=order)[0]
+    
+    if plot:
+        plt.figure(figsize=(14, 7), dpi=300)
+        plt.plot(close.index, close.values, label='Close Price', linewidth=1)
+        plt.plot(close.index[local_min], close.iloc[local_min], 'g^', label='Buy (Minima)', markersize=5)
+        plt.plot(close.index[local_max], close.iloc[local_max], 'rv', label='Sell (Maxima)', markersize=5)
+        plt.title("All local Extrema (Max/Min Based)")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+        
+    buy_idxs = []
+    sell_idxs = []
+
+    for idx in local_min:
+        window = close_values[max(0, idx): idx + order + 1] #only look ahead
+        if len(window) < 2:
+            continue
+        peak = close_values[idx]
+        neighbor_max = np.max(window)
+        pct_diff = (neighbor_max - peak) / neighbor_max
+        if pct_diff >= min_price_change:
+            if not buy_idxs or (idx - buy_idxs[-1]) >= min_distance:
+                buy_idxs.append(idx)
+
+    for idx in local_max:
+        window = close_values[max(0, idx): idx + order + 1] #only look ahead
+        if len(window) < 2:
+            continue
+        peak = close_values[idx]
+        neighbor_min = np.min(window)
+        pct_diff = (peak - neighbor_min) / neighbor_min
+        if pct_diff >= min_price_change:
+            if not sell_idxs or (idx - sell_idxs[-1]) >= min_distance:
+                sell_idxs.append(idx)
+
+    if plot:
+        plt.figure(figsize=(14, 7), dpi=300)
+        plt.plot(close.index, close.values, label='Close Price', linewidth=1)
+        plt.plot(close.index[buy_idxs], close.iloc[buy_idxs], 'g^', label='Buy (Minima)', markersize=5)
+        plt.plot(close.index[sell_idxs], close.iloc[sell_idxs], 'rv', label='Sell (Maxima)', markersize=5)
+        plt.title("Independent Local Extrema Labels (Max/Min Based)")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    return np.array(buy_idxs, dtype=int), np.array(sell_idxs, dtype=int)
+
 
 def detect_labels_via_peaks(prices, gain_threshold=0.1,
                             min_distance=1, smooth=True, ma_window=20, plot=False):
@@ -420,19 +499,25 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
         df_tmp = df['Close'].values
         plot = False
         #buy_peaks, sell_peaks = detect_labels_via_peaks(df_tmp, gain_threshold=0.1, min_distance=1, smooth=True, ma_window=20, plot=plot)
-        buy_peaks, sell_peaks = detect_local_extrema_labels(
+        buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
             df_tmp,
-            gain_threshold=0.1,
-            time_threshold=days,
-            min_distance=1,
-            smooth=True,
-            ma_window=20,
-            plot=plot
-            )
+            order=days,
+            min_price_change=0.1,
+            min_distance=days,
+            plot=plot)
+        #buy_peaks, sell_peaks = detect_local_extrema_labels(
+        #    df_tmp,
+        #    gain_threshold=0.1,
+        #    time_threshold=days,
+        #    min_distance=1,
+        #    smooth=True,
+        #    ma_window=20,
+        #    plot=plot
+        #    )
         # expand indexes with a tolerance of 1
         #buy_peaks = expand_indices(buy_peaks, tolerance=1)
         #sell_peaks = expand_indices(sell_peaks, tolerance=1)
-
+        #SELL-1 BUY-2
         labels = np.zeros(len(df_tmp), dtype=np.uint8)
         labels[sell_peaks] = 1
         labels[buy_peaks] = 2
@@ -469,7 +554,11 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
                 continue
 
             data_memmap[sample_index] = combined
-            labels_memmap[sample_index] = labels[ti]
+            if ti + 1 < len(labels):
+                labels_memmap[sample_index] = labels[ti + 1]
+            else:
+                continue  # prevent IndexError if ti+1 is out of bounds
+
             symbol_names_array[sample_index] = symbol
             sample_index += 1
 
