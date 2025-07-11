@@ -56,6 +56,8 @@ df['FutureLogReturn'] = df['LogReturn'].shift(-1)
 df.dropna(subset=['FutureLogReturn'], inplace=True)
 
 threshold = df['LogReturn'].rolling(20).std().mean()
+print(f"ℹ️ Classification threshold (log return): {threshold:.5f} ({(np.exp(threshold)-1)*100:.2f}% movement)")
+
 bins = [-np.inf, -threshold, threshold, np.inf]
 df['Direction'] = pd.cut(df['FutureLogReturn'], bins=bins, labels=[0, 1, 2]).astype(int)
 print("✅ Targets assigned.")
@@ -188,3 +190,52 @@ print("📈 Directional Accuracy:", accuracy_score(
     [to_direction(i) for i in y_true_classes],
     [to_direction(i) for i in y_pred_classes]
 ))
+
+# ----------------------------
+# Fresh Fetch & Feature Generation (Fixed)
+# ----------------------------
+print("🔄 Fetching fresh data...")
+
+# Fetch last 180 calendar days
+df_live = yf.download(ticker, period="180d")
+
+# Generate features using standard column names
+df_live['Return'] = df_live['Close'].pct_change()
+df_live['LogReturn'] = np.log(df_live['Close'] / df_live['Close'].shift(1))
+df_live['MA_5'] = df_live['Close'].rolling(window=5).mean()
+df_live['MA_10'] = df_live['Close'].rolling(window=10).mean()
+df_live['STD_5'] = df_live['Close'].rolling(window=5).std()
+df_live['Volume_Change'] = df_live['Volume'].pct_change()
+df_live['Price_Range'] = df_live['High'] - df_live['Low']
+df_live['Momentum_3'] = df_live['Close'] - df_live['Close'].shift(3)
+
+# Drop rows with NaNs
+df_live.dropna(inplace=True)
+
+print("✅ Fresh features computed.")
+
+# ----------------------------
+# Extract Latest Window
+# ----------------------------
+window = 100
+latest_window = df_live[-window:]
+
+features = [
+    'Open', 'High', 'Low', 'Close', 'Volume',
+    'MA_10', 'STD_5', 'Volume_Change', 'Price_Range', 'Momentum_3'
+]
+
+# Scale and reshape
+scaler = MinMaxScaler()
+latest_scaled = scaler.fit_transform(latest_window[features])
+latest_scaled = latest_scaled.reshape(1, latest_scaled.shape[0], latest_scaled.shape[1])
+
+# ----------------------------
+# Predict
+# ----------------------------
+next_day_pred = model.predict(latest_scaled)
+predicted_class = np.argmax(next_day_pred)
+
+class_map = {0: "📉 Down", 1: "➖ Neutral", 2: "📈 Up"}
+print(f"\n🧠 Predicted next day movement for {ticker}: {class_map[predicted_class]}")
+
