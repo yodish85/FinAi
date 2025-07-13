@@ -309,16 +309,15 @@ def find_confirmed_local_extrema_independent(
 
     return np.array(buy_idxs, dtype=int), np.array(sell_idxs, dtype=int)
 
-
 def detect_labels_via_peaks(prices, gain_threshold=0.1,
-                            min_distance=1, smooth=True, ma_window=20, plot=False):
+                            min_distance=1, smooth=True, ma_window=20,
+                            max_holding_period=30, plot=False):
     """
-    Detect sell (local maxima) and buy (local minima) points where the gain exceeds the threshold.
-    A pair is kept if:
-        - gain from a buy to its next sell > threshold, OR
-        - gain from a sell to its next buy > threshold
+    Detect optimal buy/sell (or sell/buy) pairs based on:
+    - maximum gain,
+    - gain threshold,
+    - maximum holding period constraint.
     """
-    # Ensure prices is not empty or NaN
     if prices is None or len(prices) == 0 or np.all(np.isnan(prices)):
         print("Error: Empty or NaN array passed to detect_labels_via_peaks.")
         return [], []
@@ -328,58 +327,69 @@ def detect_labels_via_peaks(prices, gain_threshold=0.1,
     if smooth and len(prices) >= ma_window:
         prices = np.convolve(prices, np.ones(ma_window) / ma_window, mode='same')
 
-    # Step 1: Find peaks
+    # Step 1: Find all peaks
     prominence = 0.005 * prices.max()
     sell_idxs, _ = scipy.signal.find_peaks(prices, distance=min_distance, prominence=prominence)
     buy_idxs, _ = scipy.signal.find_peaks(-prices, distance=min_distance, prominence=prominence)
 
     if plot:
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(14, 6))
         plt.plot(prices, label='Price')
         plt.plot(buy_idxs, prices[buy_idxs], 'g^', label='Buy', markersize=10)
         plt.plot(sell_idxs, prices[sell_idxs], 'rv', label='Sell', markersize=10)
+        plt.title("Buy/Sell Points Before Filtering")
         plt.legend()
-        plt.title('Buy/Sell Points Before Filtering')
         plt.show()
 
-    # Step 2: Filter pairs based on gain
+    # Step 2: Match peaks with best gain within holding window
+    used_idxs = set()
     valid_buy_idxs = []
     valid_sell_idxs = []
 
-    # Sort for chronological order
-    buy_idxs = np.sort(buy_idxs)
-    sell_idxs = np.sort(sell_idxs)
-
-    i, j = 0, 0
-    while i < len(buy_idxs) and j < len(sell_idxs):
-        buy_idx = buy_idxs[i]
-        sell_idx = sell_idxs[j]
-
-        if sell_idx <= buy_idx:
-            j += 1  # Sell must come after buy
+    # Try best Buy → Sell (long)
+    for buy in buy_idxs:
+        candidates = [
+            sell for sell in sell_idxs
+            if buy < sell <= buy + max_holding_period and sell not in used_idxs
+        ]
+        if not candidates:
             continue
 
-        gain_buy_to_sell = (prices[sell_idx] - prices[buy_idx]) / prices[buy_idx]
+        gains = [(sell, (prices[sell] - prices[buy]) / prices[buy]) for sell in candidates]
+        best = max(gains, key=lambda x: x[1])
 
-        # Look ahead for next buy after current sell
-        next_buy_idx = next((b for b in buy_idxs if b > sell_idx), None)
-        gain_sell_to_buy = (prices[next_buy_idx] - prices[sell_idx]) / prices[sell_idx] if next_buy_idx else -np.inf
+        if best[1] >= gain_threshold:
+            valid_buy_idxs.append(buy)
+            valid_sell_idxs.append(best[0])
+            used_idxs.update({buy, best[0]})
 
-        if gain_buy_to_sell >= gain_threshold or gain_sell_to_buy >= gain_threshold:
-            valid_buy_idxs.append(buy_idx)
-            valid_sell_idxs.append(sell_idx)
-            i += 1
-            j += 1
-        else:
-            i += 1  # Move to next buy, keep sell for future matching
+    # Try best Sell → Buy (short)
+    for sell in sell_idxs:
+        if sell in used_idxs:
+            continue
+        candidates = [
+            buy for buy in buy_idxs
+            if sell < buy <= sell + max_holding_period and buy not in used_idxs
+        ]
+        if not candidates:
+            continue
 
+        gains = [(buy, (prices[sell] - prices[buy]) / prices[sell]) for buy in candidates]
+        best = max(gains, key=lambda x: x[1])
+
+        if best[1] >= gain_threshold:
+            valid_sell_idxs.append(sell)
+            valid_buy_idxs.append(best[0])
+            used_idxs.update({sell, best[0]})
+
+    # Step 3: Plot filtered matches
     if plot:
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(14, 6))
         plt.plot(prices, label='Price')
         plt.plot(valid_buy_idxs, prices[valid_buy_idxs], 'g^', label='Valid Buy', markersize=10)
         plt.plot(valid_sell_idxs, prices[valid_sell_idxs], 'rv', label='Valid Sell', markersize=10)
+        plt.title("Filtered Buy/Sell Points with Gain Threshold & Holding Period")
         plt.legend()
-        plt.title('Filtered Buy/Sell Points with Gain Threshold')
         plt.show()
 
     return np.array(valid_buy_idxs, dtype=int), np.array(valid_sell_idxs, dtype=int)
@@ -448,13 +458,28 @@ def add_technical_indicators(df):
     df.dropna(inplace=True)
     return df
 
+import shutil
+
+def clear_folder(folder_path):
+    for filename in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)  # remove file or symlink
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)  # remove directory and contents
+        except Exception as e:
+            print(f"Failed to delete {file_path}. Reason: {e}")
+
 def process_windows(processed_dfs, days, name="run", symbol_names=None):
     fft_features = ['Close', 'High', 'Low', 'Volume', 'Typical_Price', 'VWAP', 'HL2', 'OHLC4', 'MA20']
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     subdir = "daily_data/" if name == "daily" else ""
     prefix = f"train-val-data/{subdir}"
-
+    if name == 'daily':
+        clear_folder(prefix)
+        
     raw_data_path = f"{prefix}data_windows_{name}_{timestamp}.npy"
     raw_label_path = f"{prefix}labels_{name}_{timestamp}.npy"
     symbol_path = f"{prefix}symbols_{name}_{timestamp}.npy"
@@ -498,13 +523,19 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
 
         df_tmp = df['Close'].values
         plot = False
-        #buy_peaks, sell_peaks = detect_labels_via_peaks(df_tmp, gain_threshold=0.1, min_distance=1, smooth=True, ma_window=20, plot=plot)
-        buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
-            df_tmp,
-            order=days,
-            min_price_change=0.1,
-            min_distance=days,
-            plot=plot)
+        buy_peaks, sell_peaks = detect_labels_via_peaks(df_tmp,
+                                                        gain_threshold=0.1, 
+                                                        min_distance=1, 
+                                                        smooth=True, 
+                                                        ma_window=20, 
+                                                        max_holding_period=days,
+                                                        plot=plot)
+        #buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
+        #    df_tmp,
+        #    order=days,
+        #    min_price_change=0.1,
+        #    min_distance=days,
+        #    plot=plot)
         #buy_peaks, sell_peaks = detect_local_extrema_labels(
         #    df_tmp,
         #    gain_threshold=0.1,
@@ -554,13 +585,15 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
                 continue
 
             data_memmap[sample_index] = combined
+            symbol_names_array[sample_index] = symbol
+            
             if ti + 1 < len(labels):
                 labels_memmap[sample_index] = labels[ti + 1]
+                sample_index += 1
             else:
+                sample_index += 1
                 continue  # prevent IndexError if ti+1 is out of bounds
 
-            symbol_names_array[sample_index] = symbol
-            sample_index += 1
 
         del df, df_clean, data_array, df_tmp, labels
         gc.collect()
@@ -610,62 +643,69 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
     
     window_days = 30;
     raw_data_path, raw_label_path, symbol_path = process_windows(processed_dfs, window_days, name, symbol_names=symbols)
-    balanced_data, balanced_labels, balanced_symbols, data, labels, symbols = balance_and_save(raw_data_path, raw_label_path, symbol_path, name)
-    
+    balanced_data, balanced_labels, balanced_symbols, data, labels, symbols = balance_and_save(raw_data_path, raw_label_path, symbol_path, name, doBalance)
+
     if doBalance:
         return balanced_data, balanced_labels, balanced_symbols
     else:
         return data, labels, symbols
 
-def balance_and_save(raw_data_path, raw_label_path, symbol_path=None, name='default'):
+def balance_and_save(raw_data_path, raw_label_path, symbol_path=None, name='default', doBalance=True):
     print("Balancing dataset...")
 
     data = np.load(raw_data_path, mmap_mode='r')
     labels = np.load(raw_label_path)
-
-    class_0_idx = np.where(labels == 0)[0]
-    class_1_idx = np.where(labels == 1)[0]
-    class_2_idx = np.where(labels == 2)[0]
-
-    min_class_size = min(len(class_0_idx), len(class_1_idx), len(class_2_idx))
-    print(f"Class sizes before balancing: 0={len(class_0_idx)}, 1={len(class_1_idx)}, 2={len(class_2_idx)}")
-    print(f"Balancing to {min_class_size} samples per class")
-
-    np.random.seed(42)
-    balanced_indices = np.concatenate([
-        np.random.choice(class_0_idx, min_class_size, replace=False),
-        np.random.choice(class_1_idx, min_class_size, replace=False),
-        np.random.choice(class_2_idx, min_class_size, replace=False)
-    ])
-    np.random.shuffle(balanced_indices)
-
-    balanced_data = data[balanced_indices]
-    balanced_labels = labels[balanced_indices]
-
-    # Save balanced data
-    subdir = "daily_data/" if name == "daily" else ""
-    prefix = f"train-val-data/{subdir}"
+    balanced_data = []
+    balanced_labels = []
+    balanced_symbols = []
     
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    data_path = f"{prefix}{name}_balanced_data_{ts}.npy"
-    label_path = f"{prefix}{name}_balanced_labels_{ts}.npy"
-    symbol_balanced_path = None
-
-    np.save(data_path, balanced_data)
-    np.save(label_path, balanced_labels)
-
     if symbol_path:
         symbols = np.load(symbol_path, allow_pickle=True)
-        balanced_symbols = symbols[balanced_indices]
-        symbol_balanced_path = f"train-val-data/{name}_balanced_symbols_{ts}.npy"
-        np.save(symbol_balanced_path, balanced_symbols)
-        print(f"Saved balanced symbols: {symbol_balanced_path}")
-
-    print("Balanced data saved:")
-    print(f" - Features: {data_path}")
-    print(f" - Labels: {label_path}")
-
+    
+    if doBalance:
+        class_0_idx = np.where(labels == 0)[0]
+        class_1_idx = np.where(labels == 1)[0]
+        class_2_idx = np.where(labels == 2)[0]
+    
+        min_class_size = min(len(class_0_idx), len(class_1_idx), len(class_2_idx))
+        print(f"Class sizes before balancing: 0={len(class_0_idx)}, 1={len(class_1_idx)}, 2={len(class_2_idx)}")
+        print(f"Balancing to {min_class_size} samples per class")
+    
+        np.random.seed(42)
+        balanced_indices = np.concatenate([
+            np.random.choice(class_0_idx, min_class_size, replace=False),
+            np.random.choice(class_1_idx, min_class_size, replace=False),
+            np.random.choice(class_2_idx, min_class_size, replace=False)
+        ])
+        np.random.shuffle(balanced_indices)
+    
+        balanced_data = data[balanced_indices]
+        balanced_labels = labels[balanced_indices]
+    
+        # Save balanced data
+        subdir = "daily_data/" if name == "daily" else ""
+        prefix = f"train-val-data/{subdir}"
+        
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        data_path = f"{prefix}{name}_balanced_data_{ts}.npy"
+        label_path = f"{prefix}{name}_balanced_labels_{ts}.npy"
+        symbol_balanced_path = None
+    
+        np.save(data_path, balanced_data)
+        np.save(label_path, balanced_labels)
+    
+        if symbol_path:
+            balanced_symbols = symbols[balanced_indices]
+            symbol_balanced_path = f"train-val-data/{name}_balanced_symbols_{ts}.npy"
+            np.save(symbol_balanced_path, balanced_symbols)
+            print(f"Saved balanced symbols: {symbol_balanced_path}")
+    
+        print("Balanced data saved:")
+        print(f" - Features: {data_path}")
+        print(f" - Labels: {label_path}")
+    
     return balanced_data, balanced_labels, balanced_symbols, data, labels, symbols
+
 
 def remove_invalid_samples(data_list, label_list):
     clean_data = []
