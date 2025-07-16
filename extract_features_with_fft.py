@@ -531,13 +531,13 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
                                                         ma_window=5, 
                                                         max_holding_period=days,
                                                         plot=plot)
-        
-        #buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
-        #    df_tmp,
-        #    order=days,
-        #    min_price_change=0.1,
-        #    min_distance=days,
-        #    plot=plot)
+        """
+        buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
+            df_tmp,
+            order=days,
+            min_price_change=0.1,
+            min_distance=days,
+            plot=plot)
         """
         buy_peaks, sell_peaks = detect_local_extrema_labels(
             df_tmp,
@@ -548,6 +548,7 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
             ma_window=5,
             plot=plot
             )
+        """
         # expand indexes with a tolerance of 1
         #buy_peaks = expand_indices(buy_peaks, tolerance=1)
         #sell_peaks = expand_indices(sell_peaks, tolerance=1)
