@@ -26,10 +26,14 @@ def load_model(path):
         raise FileNotFoundError("No .keras or .h5 model found in path.")
 
     latest_model = max(model_files, key=os.path.getmtime)
+    
+    from training_model import WeightedCategoricalCrossentropy
+
     model = tf.keras.models.load_model(
-    latest_model,
-    custom_objects={"Attention": Attention}
+        latest_model,
+        custom_objects={'WeightedCategoricalCrossentropy': WeightedCategoricalCrossentropy}
     )
+
     print(f"Loaded model from: {latest_model}")
     return model
 
@@ -69,6 +73,7 @@ if __name__ == "__main__":
 
     # 3. Load latest model
     model = load_model('/Users/admin/FinAi')
+    #model = load_model('/Users/admin/FinAi/new model - 010725')
     
     # 4. Run model with latest data
     pred_test = model.predict(all_data)
@@ -82,7 +87,7 @@ if __name__ == "__main__":
     actions = np.array(actions)  # optional: convert to NumPy array
         
     # --- Settings ---
-    threshold = 0.8 # new model 2906
+    threshold = 0.85 # new model 1307
     margin_threshold = 0.2
     
     # --- Compute top-2 margins ---
@@ -122,7 +127,7 @@ if __name__ == "__main__":
     predicted_classes = np.argmax(pred_test, axis=1)
     confidence_scores = np.max(pred_test, axis=1)
     
-    # Filter: Only keep Buy (1) and Sell (2) predictions
+    # Filter: Only keep Buy (2) and Sell (1) predictions
     mask = (predicted_classes == 1) | (predicted_classes == 2)
     filtered_classes = predicted_classes[mask]
     filtered_confidences = confidence_scores[mask]
@@ -170,7 +175,7 @@ if __name__ == "__main__":
     
     # Separate symbols based on prediction class
     buy_symbols = [sym for sym, cls in zip(filtered_symbols_th, filtered_classes_th) if cls == 2]
-    sell_symbols = [sym for sym, cls in zip(filtered_symbols_th, filtered_classes_th) if cls != 2]
+    sell_symbols = [sym for sym, cls in zip(filtered_symbols_th, filtered_classes_th) if cls == 1]
     
     # Print buy/sell symbol lists
     print("Buy symbols:", ", ".join(buy_symbols))
