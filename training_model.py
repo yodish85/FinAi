@@ -28,6 +28,8 @@ import json
 from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
 
+import tensorflow as tf
+
 print(tf.__version__)
 print(tf.__file__)
 tf.config.set_visible_devices([], 'GPU')
@@ -193,7 +195,7 @@ def build_model(input_shape, num_classes=3):
     inputs = tf.keras.Input(shape=input_shape)
     
     # Residual Conv block
-    x = residual_conv_block(inputs, filters=32, kernel_size=5)
+    x = residual_conv_block(inputs, filters=8, kernel_size=4)
 
     # BiLSTM
     x = tf.keras.layers.Bidirectional(
@@ -229,6 +231,24 @@ def compute_fft(feature_data):
 
     return np.stack([real_part_norm, imag_part_norm], axis=1)  # shape: (n, 2)
 
+@tf.keras.utils.register_keras_serializable(package='Custom', name='WeightedCategoricalCrossentropy')
+class WeightedCategoricalCrossentropy(tf.keras.losses.Loss):
+    def __init__(self, weights, reduction='sum_over_batch_size', name='weighted_categorical_crossentropy', **kwargs):
+        super().__init__(reduction=reduction, name=name, **kwargs)
+        self.weights = tf.constant(weights, dtype=tf.float32)
+
+    def call(self, y_true, y_pred):
+        base_loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+        sample_weights = tf.reduce_sum(y_true * self.weights, axis=-1)
+        return base_loss * sample_weights
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'weights': self.weights.numpy().tolist()
+        })
+        return config
+
 def train_model(train_data, train_labels, test_data, test_labels):
     
     print("TensorFlow version:", tf.__version__)
@@ -262,7 +282,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     filtered_test_labels = test_labels[val_shuffle_idx]
     
     # --- Dataset construction ---
-    batch_size = 64
+    batch_size = 16
     
     train_ds = tf.data.Dataset.from_tensor_slices((filtered_train_data, filtered_train_labels)) \
         .shuffle(buffer_size=len(train_data)) \
@@ -282,17 +302,21 @@ def train_model(train_data, train_labels, test_data, test_labels):
     num_classes = 3
     input_shape = filtered_train_data.shape[1:]
     
-    # If labels are one-hot, convert to class indices for class weights
-    if filtered_train_labels.ndim == 2 and filtered_train_labels.shape[1] == num_classes:
+    # Compute class weights
+    if train_labels.ndim == 2:
         y_integers = np.argmax(train_labels, axis=1)
     else:
         y_integers = train_labels
+
+    class_weights_array = compute_class_weight(
+        class_weight='balanced',
+        classes=np.unique(y_integers),
+        y=y_integers
+    )
+    print("Class weights:", dict(enumerate(class_weights_array)))
     
-    class_weights_array = compute_class_weight(class_weight='balanced',
-                                               classes=np.unique(y_integers),
-                                               y=y_integers)
-    class_weights = dict(enumerate(class_weights_array))
-    print("Class weights:", class_weights)
+    # Use custom class-weighted categorical crossentropy
+    loss_fn = WeightedCategoricalCrossentropy(class_weights_array)
     
     # --- Optimizer, loss, and model ---
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
@@ -302,7 +326,6 @@ def train_model(train_data, train_labels, test_data, test_labels):
     )
     
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
-    loss_fn = tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1)
     
     model = build_model(input_shape=input_shape, num_classes=num_classes)
     model.compile(optimizer=optimizer, loss=loss_fn, metrics=['accuracy'])
@@ -314,10 +337,9 @@ def train_model(train_data, train_labels, test_data, test_labels):
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=500,
+        epochs=100,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
-        class_weight=class_weights,
         callbacks=[early_stop]
     )
 
@@ -386,7 +408,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     plt.show()
     
     # --- Settings ---
-    threshold = 0.8
+    threshold = 0.6
     margin_threshold = 0.2
     
     # --- Compute top-2 margins ---
@@ -598,8 +620,8 @@ def get_symbols_from_folder(base_dir):
         
 if __name__ == "__main__":
     
-    loadData = True
-    loadModel = True
+    loadData = False
+    loadModel = False
     days_to_process = []
 
     if not loadData:
