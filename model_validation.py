@@ -33,15 +33,13 @@ import training_model
 from daily_check import load_model
 from training_model import get_symbols_from_folder
 
-
-
 if __name__ == "__main__":
     
     directory = '/Users/admin/FinAi/market_data/train'
     files = os.listdir(directory)
     # Get tickers from training
     tickers = training_model.get_symbols_from_folder(directory)
-    tickers = tickers[0:100]
+    tickers = tickers[100:200]
     for ticker in tickers:
         print(f"\n--- Training model for {ticker} ---\n")
     
@@ -51,7 +49,7 @@ if __name__ == "__main__":
         print("🔄 Fetching fresh data...")
         
         # Fetch last 180 calendar days
-        data_path = "/Users/admin/FinAi/model_validation"
+        data_path = "/Users/admin/FinAi/market_data/train"
         fetcher = StockFetcher(base_path=data_path)
         fetcher.fetch_and_save(ticker, data_path)
     
@@ -59,9 +57,14 @@ if __name__ == "__main__":
         doBalance = False
         directory = []
         
-        tr_data, tr_labels, tr_symbols =  \
-            extract_features_with_fft.extract_features_with_fft(ticker, data_path, True, 'daily', days_to_process, doBalance)
+        result = extract_features_with_fft.extract_features_with_fft([ticker], data_path, True, 'daily', days_to_process, doBalance)
+
+        if result is None:
+            print(f"[Warning] Skipping ticker {ticker} — feature extraction failed or not enough data.")
+            continue  # or `return`, depending on your program structure
         
+        tr_data, tr_labels, tr_symbols = result
+
         df = yf.download(ticker, start='2015-01-01')
     
         # retain the last N days
@@ -104,44 +107,66 @@ if __name__ == "__main__":
             pred_test[i,:] = model.predict(window_data)
         
         # --- Settings ---
-        threshold = 0.85
-        margin_threshold = 0.4
+        buy_threshold = 0.75
+        buy_margin_threshold = 0.2
+        
+        sell_threshold = 0.65
+        sell_margin_threshold = 0.2
         
         # --- Compute top-2 margins ---
         top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
         margins = top2_sorted[:, 1] - top2_sorted[:, 0]
         
-        # --- Get confident prediction indexes ---
-        confident_idxs = np.where((np.max(pred_test, axis=1) > threshold) & (margins > margin_threshold))[0]
+        # --- Get max prediction values and predicted classes ---
+        max_probs = np.max(pred_test, axis=1)
+        pred_classes = np.argmax(pred_test, axis=1)
         
-        # --- Extract predicted and true classes for confident samples ---
-        confident_preds = np.argmax(pred_test[confident_idxs], axis=1)
+        # --- Get confident BUY predictions ---
+        buy_mask = (pred_classes == 2) & \
+                   (max_probs > buy_threshold) & \
+                   (margins > buy_margin_threshold)
+        buy_pred_idxs = np.where(buy_mask)[0]
+        buy_probs = pred_test[buy_pred_idxs, 2]  # Probabilities for class 2 (Buy)
         
-        # Convert to arrays just to be safe
-        confident_preds = np.array(confident_preds)
-        confident_idxs = np.array(confident_idxs)
+        # --- Get confident SELL predictions ---
+        sell_mask = (pred_classes == 1) & \
+                    (max_probs > sell_threshold) & \
+                    (margins > sell_margin_threshold)
+        sell_pred_idxs = np.where(sell_mask)[0]
+        sell_probs = pred_test[sell_pred_idxs, 1]  # Probabilities for class 1 (Sell)
         
-        # Find indices where confident_preds == 1 or 2
-        buy_pred_idxs = confident_idxs[confident_preds == 2]
-        sell_pred_idxs = confident_idxs[confident_preds == 1]
-        
-        # Plot price curve
+        # --- Plot price curve ---
         plt.figure(figsize=(14, 6))
         plt.plot(prices, label='Price')
-    
-        # Predicted buy (1) → empty blue circles
+        
+        # --- Plot predicted Buys ---
         plt.plot(prices.index[buy_pred_idxs], prices.iloc[buy_pred_idxs], 
                  'bo', markersize=8, label='Predicted Buy', fillstyle='none')
+        for idx, prob in zip(buy_pred_idxs, buy_probs):
+            x = prices.index[idx]
+            y = prices.iloc[idx]
+            y_text = y + 0.03 * prices.max()  # Raise text slightly above point
+            plt.plot([x, x], [y, y_text], 'b--', linewidth=0.5)  # Connecting line
+            plt.text(x, y_text, f"{prob:.2f}", color='blue', fontsize=8, ha='center')
         
-        # Predicted sell (2) → empty black circles
+        # --- Plot predicted Sells ---
         plt.plot(prices.index[sell_pred_idxs], prices.iloc[sell_pred_idxs], 
                  'ko', markersize=8, label='Predicted Sell', fillstyle='none')
+        for idx, prob in zip(sell_pred_idxs, sell_probs):
+            x = prices.index[idx]
+            y = prices.iloc[idx]
+            y_text = y - 0.03 * prices.max()  # Lower text below point
+            plt.plot([x, x], [y, y_text], 'k--', linewidth=0.5)  # Connecting line
+            plt.text(x, y_text, f"{prob:.2f}", color='black', fontsize=8, ha='center')
         
-        # Actual buy/sell signals (optional)
-        plt.plot(prices.index[buy_indices], prices.iloc[buy_indices], 'g^', markersize=10, label='Buy')
-        plt.plot(prices.index[sell_indices], prices.iloc[sell_indices], 'rv', markersize=10, label='Sell')
+        # --- Plot actual buy/sell signals (optional) ---
+        plt.plot(prices.index[buy_indices], prices.iloc[buy_indices], 
+                 'g^', markersize=10, label='Buy')
+        plt.plot(prices.index[sell_indices], prices.iloc[sell_indices], 
+                 'rv', markersize=10, label='Sell')
         
         # Final touches
         plt.title("Buy/Sell Predictions vs Actual")
         plt.legend()
+        plt.tight_layout()
         plt.show()
