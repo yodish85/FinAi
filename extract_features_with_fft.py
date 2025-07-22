@@ -240,98 +240,68 @@ def find_extrema(
     plot=False
 ):
     """
-    Identifies significant local minima (buy) and maxima (sell) independently
-    using sliding windows and a filtering threshold.
-
-    Parameters:
-        close (pd.Series or np.ndarray): Closing prices.
-        order (int): Points on each side for local extrema detection.
-        window (int): Total window size to scan for extrema at each step.
-        min_price_change (float): Minimum % price change to confirm extrema.
-        plot (bool): Whether to display plots.
-
-    Returns:
-        (np.ndarray, np.ndarray): Buy (minima) and Sell (maxima) indices.
+    Optimized extrema detection with relaxed global extrema sensitivity.
     """
     if isinstance(close, np.ndarray):
         close = pd.Series(close)
 
     close_values = close.values
-    half_window = window // 2
     length = len(close_values)
 
-    buy_idxs = []
-    sell_idxs = []
+    # Adjusted: Relaxed order to capture more extrema
+    relaxed_order = max(1, order // 2)
 
-    # Step 1: Identify raw local extrema in sliding windows
-    for idx in range(half_window, length - half_window, order):
-        window_slice = close_values[idx - half_window : idx + half_window + 1]
+    # Global extrema detection with relaxed order
+    buy_idxs = argrelextrema(close_values, np.less_equal, order=relaxed_order)[0]
+    sell_idxs = argrelextrema(close_values, np.greater_equal, order=relaxed_order)[0]
 
-        local_min = argrelextrema(window_slice, np.less_equal, order=order)[0]
-        local_max = argrelextrema(window_slice, np.greater_equal, order=order)[0]
-
-        for lm in local_min:
-            global_idx = idx - half_window + lm
-            buy_idxs.append(global_idx)
-
-        for lx in local_max:
-            global_idx = idx - half_window + lx
-            sell_idxs.append(global_idx)
-
-    # Remove duplicates and sort
-    buy_idxs = sorted(set(buy_idxs))
-    sell_idxs = sorted(set(sell_idxs))
-    
     # Plot BEFORE filtering
     if plot:
         plt.figure(figsize=(12, 6))
-        plt.plot(close_values, label='Price')
-        plt.plot(buy_idxs, close_values[buy_idxs], 'g^', label='Buy Candidates', markersize=10)
-        plt.plot(sell_idxs, close_values[sell_idxs], 'rv', label='Sell Candidates', markersize=10)
+        plt.plot(close.index, close_values, label='Price')
+        plt.plot(close.index[buy_idxs], close_values[buy_idxs], 'g^', label='Buy Candidates', markersize=10)
+        plt.plot(close.index[sell_idxs], close_values[sell_idxs], 'rv', label='Sell Candidates', markersize=10)
         plt.legend()
         plt.title('Buy/Sell Points Before Filtering')
         plt.grid(True)
+        plt.tight_layout()
         plt.show()
 
-    # Step 2: Filter extrema based on price change
-    better_buy_idxs = []
-    better_sell_idxs = []
+    # Filter extrema based on forward-looking price change
+    def filter_extrema(indices, is_minima):
+        result = []
+        for idx in indices:
+            end = min(length, idx + window)
+            if end - idx < 2:
+                continue
+            future_window = close_values[idx:end]
+            if is_minima:
+                price_diff = (np.max(future_window) - close_values[idx]) / close_values[idx]
+                if price_diff >= min_price_change:
+                    result.append(idx)
+            else:
+                price_diff = (close_values[idx] - np.min(future_window)) / close_values[idx]
+                if price_diff >= min_price_change:
+                    result.append(idx)
+        return np.array(result, dtype=int)
 
-    for idx in buy_idxs:
-        window_start = idx
-        window_end = min(len(close_values), idx + window)
-        sub_window = close_values[window_start:window_end]
-        if len(sub_window) < 2:
-            continue
-        max_in_window = np.max(sub_window)
-        pct_diff = (max_in_window - close_values[idx]) / max_in_window
-        if pct_diff >= min_price_change:
-            better_buy_idxs.append(idx)
+    better_buy_idxs = filter_extrema(buy_idxs, is_minima=True)
+    better_sell_idxs = filter_extrema(sell_idxs, is_minima=False)
 
-    for idx in sell_idxs:
-        window_start = idx
-        window_end = min(len(close_values), idx + window)
-        sub_window = close_values[window_start:window_end]
-        if len(sub_window) < 2:
-            continue
-        min_in_window = np.min(sub_window)
-        pct_diff = (close_values[idx] - min_in_window) / min_in_window
-        if pct_diff >= min_price_change:
-            better_sell_idxs.append(idx)
-
-    # Step 3: Plot
+    # Plot AFTER filtering
     if plot:
         plt.figure(figsize=(14, 7), dpi=300)
-        plt.plot(close.index, close.values, label='Close Price', linewidth=2)
+        plt.plot(close.index, close_values, label='Close Price', linewidth=2)
         plt.plot(close.index[better_buy_idxs], close.iloc[better_buy_idxs], 'g^', label='Buy (Minima)', markersize=10)
         plt.plot(close.index[better_sell_idxs], close.iloc[better_sell_idxs], 'rv', label='Sell (Maxima)', markersize=10)
-        plt.title("Filtered Local Extrema (Sliding Window)")
+        plt.title("Filtered Local Extrema (Relaxed Order)")
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
         plt.show()
 
-    return np.array(better_buy_idxs, dtype=int), np.array(better_sell_idxs, dtype=int)
+    return better_buy_idxs, better_sell_idxs
+
 
 
 def find_confirmed_local_extrema_independent(
@@ -655,8 +625,8 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
         buy_peaks, sell_peaks = find_extrema(
             df_tmp,
             order=days,
-            window=days,
-            min_price_change=0.2,
+            window=15,
+            min_price_change=0.1,
             plot=plot)
         
         """
@@ -767,7 +737,7 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         processed_dfs.append(df)
         symbols.append(symbol)
     
-    window_days = 80;
+    window_days = 40;
     result = process_windows(processed_dfs, window_days, name, symbol_names=symbols)
 
     if result is None:
