@@ -39,7 +39,6 @@ if __name__ == "__main__":
     files = os.listdir(directory)
     # Get tickers from training
     tickers = training_model.get_symbols_from_folder(directory)
-    tickers = tickers[100:200]
     for ticker in tickers:
         print(f"\n--- Training model for {ticker} ---\n")
     
@@ -107,10 +106,10 @@ if __name__ == "__main__":
             pred_test[i,:] = model.predict(window_data)
         
         # --- Settings ---
-        buy_threshold = 0.75
+        buy_threshold = 0.73
         buy_margin_threshold = 0.2
         
-        sell_threshold = 0.65
+        sell_threshold = 0.69
         sell_margin_threshold = 0.2
         
         # --- Compute top-2 margins ---
