@@ -639,9 +639,13 @@ if __name__ == "__main__":
         # Get tickers from validation directory
         val_symbols   = get_symbols_from_folder(directory)
 
-        test_data, test_labels, test_symbols = extract_features_with_fft.extract_features_with_fft(val_symbols, directory, True, 'test', days_to_process)
+        extract_features_with_fft.extract_features_with_fft(val_symbols, directory, True, 'test', days_to_process)
+        
+        # And load data
+        directory = "/Users/admin/FinAi/train-val-data"
+        train_data, train_labels, test_data, test_labels = load_datasets(directory)
     else:
-        # or load data
+        # or just load data
         directory = "/Users/admin/FinAi/train-val-data"
         train_data, train_labels, test_data, test_labels = load_datasets(directory)
         

@@ -235,7 +235,7 @@ from scipy.signal import argrelextrema
 def find_extrema(
     close,
     order=5,
-    window=30,
+    window_to_perform=30,
     min_price_change=0.1,
     plot=False
 ):
@@ -271,7 +271,7 @@ def find_extrema(
     def filter_extrema(indices, is_minima):
         result = []
         for idx in indices:
-            end = min(length, idx + window)
+            end = min(length, idx + window_to_perform)
             if end - idx < 2:
                 continue
             future_window = close_values[idx:end]
@@ -336,8 +336,8 @@ def find_confirmed_local_extrema_independent(
     if plot:
         plt.figure(figsize=(14, 7), dpi=300)
         plt.plot(close.index, close.values, label='Close Price', linewidth=1)
-        plt.plot(close.index[local_min], close.iloc[local_min], 'b^', label='Raw Minima', markersize=5)
-        plt.plot(close.index[local_max], close.iloc[local_max], 'mv', label='Raw Maxima', markersize=5)
+        plt.plot(close.index[local_min], close.iloc[local_min], 'b^', label='Raw Minima', markersize=10)
+        plt.plot(close.index[local_max], close.iloc[local_max], 'mv', label='Raw Maxima', markersize=10)
         plt.title("Raw Local Extrema (Before Filtering)")
         plt.legend()
         plt.grid(True)
@@ -380,8 +380,8 @@ def find_confirmed_local_extrema_independent(
     if plot:
         plt.figure(figsize=(14, 7), dpi=300)
         plt.plot(close.index, close.values, label='Close Price', linewidth=1)
-        plt.plot(close.index[buy_idxs], close.iloc[buy_idxs], 'g^', label='Buy (Refined Minima)', markersize=5)
-        plt.plot(close.index[sell_idxs], close.iloc[sell_idxs], 'rv', label='Sell (Refined Maxima)', markersize=5)
+        plt.plot(close.index[buy_idxs], close.iloc[buy_idxs], 'g^', label='Buy (Refined Minima)', markersize=10)
+        plt.plot(close.index[sell_idxs], close.iloc[sell_idxs], 'rv', label='Sell (Refined Maxima)', markersize=10)
         plt.title("Refined Local Extrema (After Filtering)")
         plt.legend()
         plt.grid(True)
@@ -614,21 +614,22 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
                                                         max_holding_period=days,
                                                         plot=plot)
         """
-        """
+        
         buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
             df_tmp,
             order=days,
             min_price_change=0.2,
             min_distance=1,
             plot=plot)
+        
         """
         buy_peaks, sell_peaks = find_extrema(
             df_tmp,
             order=days,
-            window=15,
-            min_price_change=0.1,
+            window_to_perform=15,
+            min_price_change=0.15,
             plot=plot)
-        
+        """
         """
         buy_peaks, sell_peaks = detect_local_extrema_labels(
             df_tmp,
@@ -701,6 +702,7 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
     
     return raw_data_path, raw_label_path, symbol_path
 
+MIN_ROWS_REQUIRED = 30
 def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_process, doBalance=True):
     
     dataframes_list = get_df_list(symbol_list, directory)
@@ -720,6 +722,10 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         if days_to_process:
             # Keep only the last `days` rows
             df = df.tail(days_to_process)
+    
+        if len(df) < MIN_ROWS_REQUIRED:
+            print(f"Skipping {symbol}: not enough data ({len(df)} rows)")
+            continue  # Skip this symbol and move to the next
 
         # Dollar volume and percent change
         df["dollar_volume"] = df["Close"] * df["Volume"]
@@ -737,7 +743,7 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         processed_dfs.append(df)
         symbols.append(symbol)
     
-    window_days = 40;
+    window_days = 60;
     result = process_windows(processed_dfs, window_days, name, symbol_names=symbols)
 
     if result is None:

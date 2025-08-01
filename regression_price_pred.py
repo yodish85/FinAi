@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 from sklearn.utils import shuffle
 import importlib
 
-ticker = 'BTC-USD'
-df = yf.download(ticker, start='2015-01-01', end='2024-12-31', group_by='ticker')
+ticker = 'AAPL'
+df = yf.download(ticker, start='2015-01-01', group_by='ticker')
 
 trainModel = False
 if trainModel:

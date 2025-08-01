@@ -44,7 +44,7 @@ if __name__ == "__main__":
     fetcher = StockFetcher(base_path="/Users/admin/FinAi/market_data")
     fetcher.run()
     
-    days_to_process = 240 # need at least 200 days to compute the moving avg + 40 to compute the last day's prediction
+    days_to_process = 260 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
     doBalance = False
 
     # 2.Process data to extract features
@@ -87,8 +87,8 @@ if __name__ == "__main__":
     actions = np.array(actions)  # optional: convert to NumPy array
     
     # --- Settings ---
-    threshold_buy = 0.74
-    threshold_sell = 0.7
+    threshold_buy = 0.82
+    threshold_sell = 0.66
     margin_threshold = 0.2
     
     # --- Compute top-2 margins ---
