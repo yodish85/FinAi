@@ -302,8 +302,6 @@ def find_extrema(
 
     return better_buy_idxs, better_sell_idxs
 
-
-
 def find_confirmed_local_extrema_independent(
     close,
     order=5,
@@ -492,7 +490,7 @@ def add_technical_indicators(df):
     df['MA50'] = df['Close'].rolling(window=50).mean()
     df['MA100'] = df['Close'].rolling(window=100).mean()
     df['MA200'] = df['Close'].rolling(window=200).mean()
-
+    
     # Bollinger Bands
     df.ta.bbands(length=20, std=2, append=True)
     df.rename(columns={'BBU_20_2.0': 'BB_upper', 'BBL_20_2.0': 'BB_lower'}, inplace=True)
@@ -511,6 +509,7 @@ def add_technical_indicators(df):
     df.rename(columns={'ATRr_14': 'ATR_14'}, inplace=True)
 
     # 🔼 NEW INDICATORS
+    """
     df.ta.stoch(k=14, d=3, append=True)
     df.ta.willr(length=14, append=True)
     df.ta.cci(length=20, append=True)
@@ -534,7 +533,7 @@ def add_technical_indicators(df):
     df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
     df['HL2'] = (df['High'] + df['Low']) / 2
     df['OHLC4'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-
+    """
     # Final cleanup
     df.dropna(inplace=True)
     return df
@@ -575,7 +574,7 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
     input_dim = dummy_sample.shape[1]
     fft_features_present = [f for f in fft_features if f in first_df.columns]
     feature_dim = input_dim + 3 * len(fft_features_present)
-
+    feature_dim = 7
     data_memmap = np.lib.format.open_memmap(
         raw_data_path, dtype='float32', mode='w+', shape=(total_samples, days, feature_dim)
     )
@@ -606,15 +605,16 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
         df_tmp = df['Close'].values
         plot = False
         """
+        # Also very poor performer
         buy_peaks, sell_peaks = detect_labels_via_peaks(df_tmp,
-                                                        gain_threshold=0.1, 
-                                                        min_distance=1, 
+                                                        gain_threshold=0.2, 
+                                                        min_distance=10, 
                                                         smooth=True, 
                                                         ma_window=5, 
                                                         max_holding_period=days,
                                                         plot=plot)
-        """
         
+        """
         buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
             df_tmp,
             order=days,
@@ -622,15 +622,18 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
             min_distance=1,
             plot=plot)
         
+        
         """
         buy_peaks, sell_peaks = find_extrema(
             df_tmp,
             order=days,
-            window_to_perform=15,
-            min_price_change=0.15,
+            window_to_perform=30,
+            min_price_change=0.2,
             plot=plot)
+        
         """
         """
+        # This labelling method gives the worst performance 
         buy_peaks, sell_peaks = detect_local_extrema_labels(
             df_tmp,
             gain_threshold=0.1,
@@ -676,7 +679,8 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
             if pad_len > 0:
                 wavelet_array = np.pad(wavelet_array, ((0, pad_len), (0, 0)), mode='constant')
 
-            combined = np.concatenate([window_norm, fft_mag_norm, fft_phase_norm, wavelet_array], axis=1)
+            #combined = np.concatenate([window_norm, fft_mag_norm, fft_phase_norm, wavelet_array], axis=1)
+            combined = np.concatenate([window_norm], axis=1)
             if combined.shape != (days, feature_dim):
                 continue
 
@@ -732,13 +736,13 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         df["dollar_volume_pct"] = df["dollar_volume"].pct_change().fillna(0)
 
         # Add temporal features
-        df = add_temporal_features(df)
+        #df = add_temporal_features(df)
 
         # Add technical indicators (MA, Bollinger, MACD)
-        df = add_technical_indicators(df)
+        #df = add_technical_indicators(df)
         
         # Add advanced features
-        df = advanced_indicators.add_advanced_features(df)
+        #df = advanced_indicators.add_advanced_features(df)
 
         processed_dfs.append(df)
         symbols.append(symbol)

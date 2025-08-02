@@ -337,7 +337,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=100,
+        epochs=500,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=[early_stop]
@@ -616,6 +616,7 @@ def get_symbols_from_folder(base_dir):
     pattern = os.path.join(base_dir, "**", "*.csv")
     csv_paths = glob.glob(pattern, recursive=True)
     symbols = [os.path.splitext(os.path.basename(p))[0] for p in csv_paths]
+    symbols = symbols[0:50]
     return symbols
         
 if __name__ == "__main__":
