@@ -574,7 +574,7 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
     input_dim = dummy_sample.shape[1]
     fft_features_present = [f for f in fft_features if f in first_df.columns]
     feature_dim = input_dim + 3 * len(fft_features_present)
-    feature_dim = 7
+
     data_memmap = np.lib.format.open_memmap(
         raw_data_path, dtype='float32', mode='w+', shape=(total_samples, days, feature_dim)
     )
@@ -679,8 +679,7 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
             if pad_len > 0:
                 wavelet_array = np.pad(wavelet_array, ((0, pad_len), (0, 0)), mode='constant')
 
-            #combined = np.concatenate([window_norm, fft_mag_norm, fft_phase_norm, wavelet_array], axis=1)
-            combined = np.concatenate([window_norm], axis=1)
+            combined = np.concatenate([window_norm, fft_mag_norm, fft_phase_norm, wavelet_array], axis=1)
             if combined.shape != (days, feature_dim):
                 continue
 
@@ -736,10 +735,10 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         df["dollar_volume_pct"] = df["dollar_volume"].pct_change().fillna(0)
 
         # Add temporal features
-        #df = add_temporal_features(df)
+        df = add_temporal_features(df)
 
         # Add technical indicators (MA, Bollinger, MACD)
-        #df = add_technical_indicators(df)
+        df = add_technical_indicators(df)
         
         # Add advanced features
         #df = advanced_indicators.add_advanced_features(df)
