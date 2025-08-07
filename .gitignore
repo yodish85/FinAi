@@ -3,10 +3,10 @@
 __pycache__/
 
 # Ignore large model and data files
-*.keras
 data_old/
 train-val-data/
 market_data/
 old_models/
 model_validation/
+regression_price_pred/
 
