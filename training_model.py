@@ -195,12 +195,12 @@ def build_model(input_shape, num_classes=3):
     inputs = tf.keras.Input(shape=input_shape)
     
     # Residual Conv block
-    x = residual_conv_block(inputs, filters=8, kernel_size=4)
+    x = residual_conv_block(inputs, filters=32, kernel_size=16)
 
     # BiLSTM
     x = tf.keras.layers.Bidirectional(
-        tf.keras.layers.LSTM(64, return_sequences=False, dropout=0.3, recurrent_dropout=0.3,
-             kernel_regularizer=tf.keras.regularizers.l2(0.001))
+        tf.keras.layers.LSTM(256, return_sequences=False, dropout=0.3, recurrent_dropout=0.3,
+             kernel_regularizer=tf.keras.regularizers.l2(0.03))
     )(x)
     x = tf.keras.layers.BatchNormalization()(x)
 
@@ -208,11 +208,13 @@ def build_model(input_shape, num_classes=3):
     #x = Attention()(x)
 
     # Dense layers
-    x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
+    x = tf.keras.layers.Dense(256, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
     x = tf.keras.layers.Dropout(0.3)(x)
-    x = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
+    x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
     x = tf.keras.layers.Dropout(0.3)(x)
-    x = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
+    x = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
     x = tf.keras.layers.Dropout(0.3)(x)
     # Output
     outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
@@ -282,7 +284,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     filtered_test_labels = test_labels[val_shuffle_idx]
     
     # --- Dataset construction ---
-    batch_size = 16
+    batch_size = 32
     
     train_ds = tf.data.Dataset.from_tensor_slices((filtered_train_data, filtered_train_labels)) \
         .shuffle(buffer_size=len(train_data)) \
@@ -317,11 +319,11 @@ def train_model(train_data, train_labels, test_data, test_labels):
     
     # Use custom class-weighted categorical crossentropy
     loss_fn = WeightedCategoricalCrossentropy(class_weights_array)
-    
+    steps_per_epoch = len(train_data) // batch_size
     # --- Optimizer, loss, and model ---
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
         initial_learning_rate=1e-4,
-        decay_steps=1000,
+        decay_steps=steps_per_epoch * 10,
         decay_rate=0.9
     )
     
@@ -337,7 +339,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=500,
+        epochs=200,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=[early_stop]
@@ -522,7 +524,7 @@ def load_and_run_model(path, train_data, train_labels, test_data, test_labels):
     actions = np.array(actions)  # optional: convert to NumPy array
     
     # --- Settings ---
-    threshold = 0.75
+    threshold = 0.6
     margin_threshold = 0.2
     
     # --- Compute top-2 margins ---
@@ -616,12 +618,11 @@ def get_symbols_from_folder(base_dir):
     pattern = os.path.join(base_dir, "**", "*.csv")
     csv_paths = glob.glob(pattern, recursive=True)
     symbols = [os.path.splitext(os.path.basename(p))[0] for p in csv_paths]
-    symbols = symbols[0:50]
     return symbols
         
 if __name__ == "__main__":
     
-    loadData = False
+    loadData = True
     loadModel = False
     days_to_process = []
 

@@ -27,7 +27,7 @@ from daily_check import load_model
 from training_model import get_symbols_from_folder
 
 if __name__ == "__main__":
-    data_path = "/Users/admin/FinAi/market_data/validation"
+    data_path = "/Users/admin/FinAi/market_data/train"
     tickers = get_symbols_from_folder(data_path)
     
     
@@ -79,7 +79,7 @@ if __name__ == "__main__":
         plt.plot(aligned_prices, label='Price')
         plt.plot(aligned_prices.index[buy_indices], aligned_prices.iloc[buy_indices], 'g^', markersize=10, label='Buy')
         plt.plot(aligned_prices.index[sell_indices], aligned_prices.iloc[sell_indices], 'rv', markersize=10, label='Sell')
-        plt.title("Filtered Buy/Sell Points with Gain Threshold & Holding Period")
+        plt.title(f"{ticker} — Filtered Buy/Sell Points with Gain Threshold & Holding Period")
         plt.legend()
         plt.tight_layout()
         plt.show()
@@ -89,9 +89,9 @@ if __name__ == "__main__":
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
 
         # Thresholds
-        buy_threshold = 0.8
+        buy_threshold = 0.85
         buy_margin_threshold = 0.2
-        sell_threshold = 0.65
+        sell_threshold = 0.8
         sell_margin_threshold = 0.2
 
         # Confidence margins
@@ -134,7 +134,7 @@ if __name__ == "__main__":
         plt.plot(aligned_prices.index[buy_indices], aligned_prices.iloc[buy_indices], 'g^', markersize=10, label='Buy')
         plt.plot(aligned_prices.index[sell_indices], aligned_prices.iloc[sell_indices], 'rv', markersize=10, label='Sell')
 
-        plt.title("Buy/Sell Predictions vs Actual")
+        plt.title(f"{ticker} — Buy/Sell Predictions vs Actual")
         plt.legend()
         plt.tight_layout()
         plt.show()

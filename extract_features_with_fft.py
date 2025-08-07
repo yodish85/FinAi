@@ -496,7 +496,7 @@ def add_technical_indicators(df):
     df.rename(columns={'BBU_20_2.0': 'BB_upper', 'BBL_20_2.0': 'BB_lower'}, inplace=True)
 
     # MACD
-    df.ta.macd(append=True)
+    df.ta.macd(close='Close', append=True)
     df.rename(columns={
         'MACD_12_26_9': 'MACD',
         'MACDs_12_26_9': 'MACD_signal'
@@ -738,10 +738,19 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         df = add_temporal_features(df)
 
         # Add technical indicators (MA, Bollinger, MACD)
-        df = add_technical_indicators(df)
+        try:
+            df = add_technical_indicators(df)
+        except Exception as e:
+            print(f"[SKIP] {symbol}: error during indicator processing: {e}")
+            continue
         
         # Add advanced features
         #df = advanced_indicators.add_advanced_features(df)
+        
+        # Check again after indicators are added
+        if len(df) < MIN_ROWS_REQUIRED:
+            print(f"[SKIP] {symbol}: not enough data after feature extraction")
+            continue
 
         processed_dfs.append(df)
         symbols.append(symbol)
