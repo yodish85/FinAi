@@ -302,8 +302,6 @@ def find_extrema(
 
     return better_buy_idxs, better_sell_idxs
 
-
-
 def find_confirmed_local_extrema_independent(
     close,
     order=5,
@@ -492,13 +490,13 @@ def add_technical_indicators(df):
     df['MA50'] = df['Close'].rolling(window=50).mean()
     df['MA100'] = df['Close'].rolling(window=100).mean()
     df['MA200'] = df['Close'].rolling(window=200).mean()
-
+    
     # Bollinger Bands
     df.ta.bbands(length=20, std=2, append=True)
     df.rename(columns={'BBU_20_2.0': 'BB_upper', 'BBL_20_2.0': 'BB_lower'}, inplace=True)
 
     # MACD
-    df.ta.macd(append=True)
+    df.ta.macd(close='Close', append=True)
     df.rename(columns={
         'MACD_12_26_9': 'MACD',
         'MACDs_12_26_9': 'MACD_signal'
@@ -511,6 +509,7 @@ def add_technical_indicators(df):
     df.rename(columns={'ATRr_14': 'ATR_14'}, inplace=True)
 
     # 🔼 NEW INDICATORS
+    """
     df.ta.stoch(k=14, d=3, append=True)
     df.ta.willr(length=14, append=True)
     df.ta.cci(length=20, append=True)
@@ -534,7 +533,7 @@ def add_technical_indicators(df):
     df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
     df['HL2'] = (df['High'] + df['Low']) / 2
     df['OHLC4'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-
+    """
     # Final cleanup
     df.dropna(inplace=True)
     return df
@@ -606,15 +605,16 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
         df_tmp = df['Close'].values
         plot = False
         """
+        # Also very poor performer
         buy_peaks, sell_peaks = detect_labels_via_peaks(df_tmp,
-                                                        gain_threshold=0.1, 
-                                                        min_distance=1, 
+                                                        gain_threshold=0.2, 
+                                                        min_distance=10, 
                                                         smooth=True, 
                                                         ma_window=5, 
                                                         max_holding_period=days,
                                                         plot=plot)
-        """
         
+        """
         buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
             df_tmp,
             order=days,
@@ -622,15 +622,18 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
             min_distance=1,
             plot=plot)
         
+        
         """
         buy_peaks, sell_peaks = find_extrema(
             df_tmp,
             order=days,
-            window_to_perform=15,
-            min_price_change=0.15,
+            window_to_perform=30,
+            min_price_change=0.2,
             plot=plot)
+        
         """
         """
+        # This labelling method gives the worst performance 
         buy_peaks, sell_peaks = detect_local_extrema_labels(
             df_tmp,
             gain_threshold=0.1,
@@ -735,10 +738,19 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         df = add_temporal_features(df)
 
         # Add technical indicators (MA, Bollinger, MACD)
-        df = add_technical_indicators(df)
+        try:
+            df = add_technical_indicators(df)
+        except Exception as e:
+            print(f"[SKIP] {symbol}: error during indicator processing: {e}")
+            continue
         
         # Add advanced features
-        df = advanced_indicators.add_advanced_features(df)
+        #df = advanced_indicators.add_advanced_features(df)
+        
+        # Check again after indicators are added
+        if len(df) < MIN_ROWS_REQUIRED:
+            print(f"[SKIP] {symbol}: not enough data after feature extraction")
+            continue
 
         processed_dfs.append(df)
         symbols.append(symbol)

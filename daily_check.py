@@ -16,6 +16,7 @@ from StockFetcher import StockFetcher
 import numpy as np
 from training_model import Attention  # Adjust path accordingly
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 def load_model(path):
     # Search for the latest .keras or .h5 model file
@@ -87,8 +88,8 @@ if __name__ == "__main__":
     actions = np.array(actions)  # optional: convert to NumPy array
     
     # --- Settings ---
-    threshold_buy = 0.82
-    threshold_sell = 0.66
+    threshold_buy = 0.85
+    threshold_sell = 0.8
     margin_threshold = 0.2
     
     # --- Compute top-2 margins ---
@@ -204,5 +205,22 @@ if __name__ == "__main__":
     ax.set_title("Confident Buy/Sell Predictions")
     ax.set_ylim(0, 1.05)
     
+    # Save the plot with a timestamped filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"confident_predictions_{timestamp}.png"
     plt.tight_layout()
+    plt.savefig(filename)
+    
+    # Create folder path and ensure it exists
+    output_folder = "/Users/admin/FinAi/train-val-data/daily_data/pred_plots"  # Change to your desired folder
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Save the plot with a timestamped filename in the specified folder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(output_folder, f"confident_predictions_{timestamp}.png")
+    
+    plt.tight_layout()
+    plt.savefig(filename)
+
+    # Show the plot
     plt.show()
