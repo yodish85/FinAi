@@ -7,4 +7,6 @@ __pycache__/
 data_old/
 train-val-data/
 market_data/
+old_models/
+model_validation/
 
