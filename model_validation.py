@@ -30,7 +30,6 @@ import pandas as pd
 if __name__ == "__main__":
     data_path = "/Users/admin/FinAi/market_data/train"
     tickers = get_symbols_from_folder(data_path)
-    tickers=tickers[1:10]
     
     # Load model
     model_path = "/Users/admin/FinAi"
