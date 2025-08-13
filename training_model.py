@@ -622,7 +622,7 @@ def get_symbols_from_folder(base_dir):
         
 if __name__ == "__main__":
     
-    loadData = True
+    loadData = False
     loadModel = False
     days_to_process = []
 

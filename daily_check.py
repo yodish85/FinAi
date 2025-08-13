@@ -17,6 +17,8 @@ import numpy as np
 from training_model import Attention  # Adjust path accordingly
 import matplotlib.pyplot as plt
 from datetime import datetime
+import yfinance as yf
+import pandas as pd
 
 def load_model(path):
     # Search for the latest .keras or .h5 model file
@@ -40,187 +42,210 @@ def load_model(path):
 
 if __name__ == "__main__":
     
-    # 1.Fetch new day's stocks data
-    # To run:
-    fetcher = StockFetcher(base_path="/Users/admin/FinAi/market_data")
-    fetcher.run()
-    
-    days_to_process = 260 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
+
+    data_path = "/Users/admin/FinAi/market_data"
+    days_to_process = 263 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction + 3 to compute the clusters
     doBalance = False
 
-    # 2.Process data to extract features
+    # Get all symbols
     directory = '/Users/admin/FinAi/market_data/train'
     files = os.listdir(directory)
     # Get tickers from training
     train_symbols = training_model.get_symbols_from_folder(directory)
     
-    tr_data, tr_labels, tr_symbols =  \
-        extract_features_with_fft.extract_features_with_fft(train_symbols, directory, True, 'daily', days_to_process, doBalance)
-        
     directory = '/Users/admin/FinAi/market_data/validation'
     files = os.listdir(directory)
     # Get tickers from training
     val_symbols = training_model.get_symbols_from_folder(directory)
     
-    val_data, val_labels, val_symbols =  \
-        extract_features_with_fft.extract_features_with_fft(val_symbols, directory, True, 'daily', days_to_process, doBalance)
-        
-    # Concatenate data and labels using NumPy
-    all_data = np.concatenate((tr_data, val_data), axis=0)
-    all_labels = np.concatenate((tr_labels, val_labels), axis=0)
+    all_symbols = train_symbols + val_symbols
     
-    # Concatenate symbol lists using +
-    all_symbols = np.concatenate((tr_symbols, val_symbols), axis=0)
+    # --- Initialize before the loop ---
+    sell_probs_list = []
+    sell_tickers_list = []
+    buy_probs_list = []
+    buy_tickers_list = []
 
-    # 3. Load latest model
+    # Load model
     model = load_model('/Users/admin/FinAi')
-    #model = load_model('/Users/admin/FinAi/new model - 010725')
-    
-    # 4. Run model with latest data
-    pred_test = model.predict(all_data)
 
-    actions = []
-    for probs in pred_test:
-        margin_pred_classes = training_model.get_action_from_probs(probs, margin_threshold=0, prob_threshold=0)
-        actions.append([margin_pred_classes])
-        #print("Action:", ["0-HOLD", "1-SELL", "2-BUY"][margin_pred_classes])
+    for i, ticker in enumerate(all_symbols, start=1):
+        print(f"Processing {i}/{len(all_symbols)}: {ticker}")
         
-    actions = np.array(actions)  # optional: convert to NumPy array
-    
-    # --- Settings ---
-    threshold_buy = 0.85
-    threshold_sell = 0.8
-    margin_threshold = 0.2
-    
-    # --- Compute top-2 margins ---
-    top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
-    margins = top2_sorted[:, 1] - top2_sorted[:, 0]
-    
-    # --- Predicted classes and confidence scores ---
-    predicted_classes = np.argmax(pred_test, axis=1)
-    confidence_scores = np.max(pred_test, axis=1)
-    
-    # --- Get confident prediction indexes with class-specific thresholds ---
-    sell_mask = (predicted_classes == 1) & \
-                (confidence_scores > threshold_sell) & \
-                (margins > margin_threshold)
-    
-    buy_mask = (predicted_classes == 2) & \
-               (confidence_scores > threshold_buy) & \
-               (margins > margin_threshold)
-    
-    confident_idxs = np.where(sell_mask | buy_mask)[0]
-    
-    # --- Extract predicted and true classes for confident samples ---
-    confident_preds = predicted_classes[confident_idxs]
-    confident_symbols = np.array(all_symbols)[confident_idxs]
-    confident_perc = pred_test[confident_idxs]
-    
-    # Filter out neutral class (label=0) if still present
-    mask = (confident_preds != 0)
-    confident_preds = confident_preds[mask]
-    confident_symbols = confident_symbols[mask]
-    confident_perc = confident_perc[mask]
-    
-    # Separate predictions and symbols by class
-    preds_class_1 = confident_preds[confident_preds == 1]
-    symbols_class_1 = confident_symbols[confident_preds == 1]
-    perc_class_1 = confident_perc[confident_preds == 1]
-    
-    preds_class_2 = confident_preds[confident_preds == 2]
-    symbols_class_2 = confident_symbols[confident_preds == 2]
-    perc_class_2 = confident_perc[confident_preds == 2]
-    
-    # Unique symbols in each group
-    unique_symbols_1 = np.unique(symbols_class_1)
-    unique_symbols_2 = np.unique(symbols_class_2)
-    
-    # --- Plot: All Buy/Sell predictions sorted by confidence ---
-    mask = (predicted_classes == 1) | (predicted_classes == 2)
-    filtered_classes = predicted_classes[mask]
-    filtered_confidences = confidence_scores[mask]
-    filtered_symbols = np.array(all_symbols)[mask]
-    
-    sorted_indices = np.argsort(filtered_confidences)[::-1]
-    sorted_classes = filtered_classes[sorted_indices]
-    sorted_confidences = filtered_confidences[sorted_indices]
-    sorted_symbols = filtered_symbols[sorted_indices]
-    
-    bar_colors = ['green' if cls == 2 else 'red' for cls in sorted_classes]
-    
-    fig, ax = plt.subplots(figsize=(16, 6))
-    x = np.arange(len(sorted_confidences))
-    ax.bar(x, sorted_confidences, color=bar_colors)
-    
-    # Plot both thresholds
-    ax.axhline(y=threshold_buy, color='green', linestyle='--', linewidth=1, label=f'Buy Threshold = {threshold_buy:.2f}')
-    ax.axhline(y=threshold_sell, color='red', linestyle='--', linewidth=1, label=f'Sell Threshold = {threshold_sell:.2f}')
-    
-    # Show ticker labels on x-axis
-    ax.set_xticks(x)
-    ax.set_xticklabels(sorted_symbols, rotation=90, fontsize=8)
-    
-    ax.set_xlabel("Predictions (Sorted by Confidence)")
-    ax.set_ylabel("Prediction Confidence")
-    ax.set_title("Buy/Sell Predictions Sorted by Confidence")
-    ax.set_ylim(0, 1.0)
-    ax.legend()
-    
-    plt.tight_layout()
-    plt.show()
-    
-    # --- Filter predictions above thresholds ---
-    above_threshold_mask = ((sorted_classes == 1) & (sorted_confidences > threshold_sell)) | \
-                           ((sorted_classes == 2) & (sorted_confidences > threshold_buy))
-    
-    filtered_classes_th = sorted_classes[above_threshold_mask]
-    filtered_confidences_th = sorted_confidences[above_threshold_mask]
-    filtered_symbols_th = sorted_symbols[above_threshold_mask]
-    
-    bar_colors_th = ['green' if cls == 2 else 'red' for cls in filtered_classes_th]
-    
-    # Separate symbols based on prediction class
-    buy_symbols = [sym for sym, cls in zip(filtered_symbols_th, filtered_classes_th) if cls == 2]
-    sell_symbols = [sym for sym, cls in zip(filtered_symbols_th, filtered_classes_th) if cls == 1]
-    
-    # --- Print Results ---
-    print("Buy symbols:", ", ".join(buy_symbols))
-    print("Sell/Short symbols:", ", ".join(sell_symbols))
-    
-    # --- Plot: Only confident Buy/Sell predictions ---
-    fig, ax = plt.subplots(figsize=(16, 6))
-    x_th = np.arange(len(filtered_confidences_th))
-    bars = ax.bar(x_th, filtered_confidences_th, color=bar_colors_th)
-    
-    # Add ticker labels on x-axis
-    ax.set_xticks(x_th)
-    ax.set_xticklabels(filtered_symbols_th, rotation=90, fontsize=8)
-    
-    # Add prediction confidence as text on top of bars
-    for i, conf in enumerate(filtered_confidences_th):
-        ax.text(x_th[i], conf + 0.01, f"{conf:.2f}", ha='center', va='bottom', fontsize=8)
-    
-    ax.set_xlabel("Symbols (Above Class-Specific Thresholds)")
-    ax.set_ylabel("Prediction Confidence")
-    ax.set_title("Confident Buy/Sell Predictions")
-    ax.set_ylim(0, 1.05)
-    
-    # Save the plot with a timestamped filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"confident_predictions_{timestamp}.png"
-    plt.tight_layout()
-    plt.savefig(filename)
-    
-    # Create folder path and ensure it exists
-    output_folder = "/Users/admin/FinAi/train-val-data/daily_data/pred_plots"  # Change to your desired folder
-    os.makedirs(output_folder, exist_ok=True)
-    
-    # Save the plot with a timestamped filename in the specified folder
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(output_folder, f"confident_predictions_{timestamp}.png")
-    
-    plt.tight_layout()
-    plt.savefig(filename)
+        # Fetch latest data
+        print("🔄 Fetching fresh data...")
+        fetcher = StockFetcher(base_path=data_path)
+        fetcher.fetch_and_save(ticker, data_path)
 
-    # Show the plot
-    plt.show()
+        doBalance = False
+
+        result = extract_features_with_fft.extract_features_with_fft(
+            [ticker], data_path, True, 'daily', days_to_process, doBalance
+        )
+
+        if result is None:
+            print(f"[Warning] Skipping ticker {ticker} — feature extraction failed or not enough data.")
+            continue
+
+        tr_data, tr_labels, tr_symbols = result
+        tr_labels = np.array(tr_labels)
+
+        # Load price history
+        df = yf.download(ticker, start='2015-01-01')
+        if df.empty:
+            print(f"[Warning] No price data for {ticker}")
+            continue
+
+        # Align prices with tr_labels (fixes misalignment)
+        window_days = 60  # Must match what's used inside extract_features_with_fft
+        aligned_prices = df["Close"].iloc[-len(tr_labels):]
+        if len(aligned_prices) != len(tr_labels):
+            print(f"[Error] Label-price mismatch for {ticker}")
+            continue
+
+        # Actual buy/sell signals from labels
+        buy_indices = np.where(tr_labels == 2)[0]
+        sell_indices = np.where(tr_labels == 1)[0]
+        '''
+        # Plot actual buy/sell
+        plt.figure(figsize=(14, 6))
+        plt.plot(aligned_prices, label='Price')
+        plt.plot(aligned_prices.index[buy_indices], aligned_prices.iloc[buy_indices], 'g^', markersize=10, label='Buy')
+        plt.plot(aligned_prices.index[sell_indices], aligned_prices.iloc[sell_indices], 'rv', markersize=10, label='Sell')
+        plt.title(f"{ticker} — Filtered Buy/Sell Points with Gain Threshold & Holding Period")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+        '''
+        # --- Predict all at once (batch mode) ---
+        pred_test = model.predict(tr_data)
+        assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
+        
+        # --- Thresholds ---
+        buy_threshold = 0.85
+        buy_margin_threshold = 0.2
+        sell_threshold = 0.75
+        sell_margin_threshold = 0.2
+        
+        cluster_min_count = 3
+        cluster_window_days = 3
+        cluster_conf_ratio = 0.90
+        
+        # --- Confidence margins ---
+        top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
+        margins = top2_sorted[:, 1] - top2_sorted[:, 0]
+        max_probs = np.max(pred_test, axis=1)
+        pred_classes = np.argmax(pred_test, axis=1)
+        
+        buy_mask = (pred_classes == 2) & (max_probs > buy_threshold) & (margins > buy_margin_threshold)
+        sell_mask = (pred_classes == 1) & (max_probs > sell_threshold) & (margins > sell_margin_threshold)
+        
+        # --- Build DataFrame for filtering ---
+        df_preds = pd.DataFrame({
+            "date": aligned_prices.index,
+            "price": aligned_prices.squeeze().values,
+            "cls": pred_classes,
+            "confidence": max_probs
+        })
+        
+        # --- Apply mask for confident predictions ---
+        df_confident = df_preds[buy_mask | sell_mask].copy()
+        
+        # --- Cluster filter ---
+        def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
+            keep_indices = []
+            for i, row in df.iterrows():
+                cls = row["cls"]
+                date = row["date"]
+        
+                start_date = date - pd.Timedelta(days=window_days)
+                window = df[(df["cls"] == cls) &
+                            (df["date"] >= start_date) &
+                            (df["date"] <= date)]
+        
+                if not window.empty:
+                    max_conf = window["confidence"].max()
+                    high_conf_count = (window["confidence"] >= max_conf * conf_ratio).sum()
+                    if high_conf_count >= min_count:
+                        keep_indices.append(i)
+        
+            return df.loc[keep_indices]
+        
+        df_clustered = filter_by_cluster_rule(
+            df_confident,
+            min_count=cluster_min_count,
+            window_days=cluster_window_days,
+            conf_ratio=cluster_conf_ratio
+        )
+        
+        # --- Separate final buy/sell indices ---
+        buy_pred_idxs = df_clustered.index[df_clustered["cls"] == 2]
+        sell_pred_idxs = df_clustered.index[df_clustered["cls"] == 1]
+        
+        buy_probs = df_clustered[df_clustered["cls"] == 2]["confidence"].values
+        sell_probs = df_clustered[df_clustered["cls"] == 1]["confidence"].values
+        
+        if not sell_pred_idxs.empty:
+            sell_probs_arr = df_clustered.loc[sell_pred_idxs, "confidence"].to_numpy()
+            sell_tickers_arr = all_symbols[i]
+        
+            sell_probs_list.append(sell_probs_arr)
+            sell_tickers_list.append(sell_tickers_arr)
+        
+        if not buy_pred_idxs.empty:
+            buy_probs_arr = df_clustered.loc[buy_pred_idxs, "confidence"].to_numpy()
+            buy_tickers_arr = all_symbols[i]
+        
+            buy_probs_list.append(buy_probs_arr)
+            buy_tickers_list.append(buy_tickers_arr)
+
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    def plot_ticker_probs(tickers, probs, title, color):
+        # Pick the first element from each sublist/array
+        tickers = np.array([
+            (sublist[0] if isinstance(sublist, (list, np.ndarray)) and len(sublist) > 0 else sublist)
+            for sublist in tickers
+        ])
+        probs = np.array([
+            (sublist[0] if isinstance(sublist, (list, np.ndarray)) and len(sublist) > 0 else sublist)
+            for sublist in probs
+        ])
+    
+        if len(tickers) != len(probs):
+            raise ValueError(f"Length mismatch: {len(tickers)} tickers vs {len(probs)} probs")
+    
+        # Sort ascending by probability
+        sorted_idx = np.argsort(probs)
+        sorted_tickers = tickers[sorted_idx]
+        sorted_probs = probs[sorted_idx]
+    
+        # Plot
+        plt.figure(figsize=(10, 6))
+        bars = plt.bar(range(len(sorted_tickers)), sorted_probs, color=color)
+        plt.xticks(range(len(sorted_tickers)), sorted_tickers, rotation=90)
+        plt.title(title)
+        plt.ylabel("Probability")
+    
+        # Add labels on top
+        for bar, prob in zip(bars, sorted_probs):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
+                     f"{prob:.2f}", ha="center", va="bottom", fontsize=8)
+    
+        plt.tight_layout()
+        plt.show()
+
+
+    
+    # Plot Buy tickers
+    plot_ticker_probs(buy_tickers_list, buy_probs_list, "Buy Predictions", color="green")
+    
+    # Plot Sell tickers
+    plot_ticker_probs(sell_tickers_list, sell_probs_list, "Sell Predictions", color="red")
+
+            
+        
+        
+            

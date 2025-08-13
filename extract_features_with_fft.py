@@ -509,7 +509,7 @@ def add_technical_indicators(df):
     df.rename(columns={'ATRr_14': 'ATR_14'}, inplace=True)
 
     # 🔼 NEW INDICATORS
-    """
+    
     df.ta.stoch(k=14, d=3, append=True)
     df.ta.willr(length=14, append=True)
     df.ta.cci(length=20, append=True)
@@ -533,7 +533,7 @@ def add_technical_indicators(df):
     df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
     df['HL2'] = (df['High'] + df['Low']) / 2
     df['OHLC4'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-    """
+    
     # Final cleanup
     df.dropna(inplace=True)
     return df
