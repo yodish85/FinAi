@@ -25,11 +25,12 @@ importlib.reload(daily_check)
 from StockFetcher import StockFetcher
 from daily_check import load_model
 from training_model import get_symbols_from_folder
+import pandas as pd
 
 if __name__ == "__main__":
     data_path = "/Users/admin/FinAi/market_data/train"
     tickers = get_symbols_from_folder(data_path)
-    
+    tickers=tickers[1:10]
     
     # Load model
     model_path = "/Users/admin/FinAi"
@@ -84,34 +85,79 @@ if __name__ == "__main__":
         plt.tight_layout()
         plt.show()
 
-        # Predict all at once (batch mode)
+        # --- Predict all at once (batch mode) ---
         pred_test = model.predict(tr_data)
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
-
-        # Thresholds
-        buy_threshold = 0.85
+        
+        # --- Thresholds ---
+        buy_threshold = 0.9
         buy_margin_threshold = 0.2
         sell_threshold = 0.8
         sell_margin_threshold = 0.2
-
-        # Confidence margins
+        
+        cluster_min_count = 3
+        cluster_window_days = 3
+        cluster_conf_ratio = 0.90
+        
+        # --- Confidence margins ---
         top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
         margins = top2_sorted[:, 1] - top2_sorted[:, 0]
         max_probs = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
-
+        
         buy_mask = (pred_classes == 2) & (max_probs > buy_threshold) & (margins > buy_margin_threshold)
         sell_mask = (pred_classes == 1) & (max_probs > sell_threshold) & (margins > sell_margin_threshold)
-
-        buy_pred_idxs = np.where(buy_mask)[0]
-        sell_pred_idxs = np.where(sell_mask)[0]
-        buy_probs = pred_test[buy_pred_idxs, 2]
-        sell_probs = pred_test[sell_pred_idxs, 1]
-
-        # Plot predictions
+        
+        # --- Build DataFrame for filtering ---
+        df_preds = pd.DataFrame({
+            "date": aligned_prices.index,
+            "price": aligned_prices.squeeze().values,
+            "cls": pred_classes,
+            "confidence": max_probs
+        })
+        
+        # --- Apply mask for confident predictions ---
+        df_confident = df_preds[buy_mask | sell_mask].copy()
+        
+        # --- Cluster filter ---
+        def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
+            keep_indices = []
+            for i, row in df.iterrows():
+                cls = row["cls"]
+                date = row["date"]
+        
+                start_date = date - pd.Timedelta(days=window_days)
+                window = df[(df["cls"] == cls) &
+                            (df["date"] >= start_date) &
+                            (df["date"] <= date)]
+        
+                if not window.empty:
+                    max_conf = window["confidence"].max()
+                    high_conf_count = (window["confidence"] >= max_conf * conf_ratio).sum()
+                    if high_conf_count >= min_count:
+                        keep_indices.append(i)
+        
+            return df.loc[keep_indices]
+        
+        df_clustered = filter_by_cluster_rule(
+            df_confident,
+            min_count=cluster_min_count,
+            window_days=cluster_window_days,
+            conf_ratio=cluster_conf_ratio
+        )
+        
+        # --- Separate final buy/sell indices ---
+        buy_pred_idxs = df_clustered.index[df_clustered["cls"] == 2]
+        sell_pred_idxs = df_clustered.index[df_clustered["cls"] == 1]
+        
+        buy_probs = df_clustered[df_clustered["cls"] == 2]["confidence"].values
+        sell_probs = df_clustered[df_clustered["cls"] == 1]["confidence"].values
+        
+        # --- Plot predictions ---
         plt.figure(figsize=(14, 6))
         plt.plot(aligned_prices, label='Price')
-
+        
+        # Buy predictions
         plt.plot(aligned_prices.index[buy_pred_idxs], aligned_prices.iloc[buy_pred_idxs],
                  'bo', markersize=8, label='Predicted Buy', fillstyle='none')
         for idx, prob in zip(buy_pred_idxs, buy_probs):
@@ -120,7 +166,8 @@ if __name__ == "__main__":
             y_text = y + 0.03 * aligned_prices.max()
             plt.plot([x, x], [y, y_text], 'b--', linewidth=0.5)
             plt.text(x, y_text, f"{prob:.2f}", color='blue', fontsize=8, ha='center')
-
+        
+        # Sell predictions
         plt.plot(aligned_prices.index[sell_pred_idxs], aligned_prices.iloc[sell_pred_idxs],
                  'ko', markersize=8, label='Predicted Sell', fillstyle='none')
         for idx, prob in zip(sell_pred_idxs, sell_probs):
@@ -129,12 +176,14 @@ if __name__ == "__main__":
             y_text = y - 0.03 * aligned_prices.max()
             plt.plot([x, x], [y, y_text], 'k--', linewidth=0.5)
             plt.text(x, y_text, f"{prob:.2f}", color='black', fontsize=8, ha='center')
-
-        # Actual labels again (for reference)
-        plt.plot(aligned_prices.index[buy_indices], aligned_prices.iloc[buy_indices], 'g^', markersize=10, label='Buy')
-        plt.plot(aligned_prices.index[sell_indices], aligned_prices.iloc[sell_indices], 'rv', markersize=10, label='Sell')
-
-        plt.title(f"{ticker} — Buy/Sell Predictions vs Actual")
+        
+        # Actual labels (for reference)
+        plt.plot(aligned_prices.index[buy_indices], aligned_prices.iloc[buy_indices],
+                 'g^', markersize=10, label='Buy')
+        plt.plot(aligned_prices.index[sell_indices], aligned_prices.iloc[sell_indices],
+                 'rv', markersize=10, label='Sell')
+        
+        plt.title(f"{ticker} — Cluster-Filtered Buy/Sell Predictions vs Actual")
         plt.legend()
         plt.tight_layout()
         plt.show()
