@@ -75,7 +75,7 @@ if __name__ == "__main__":
         # Fetch latest data
         print("🔄 Fetching fresh data...")
         fetcher = StockFetcher(base_path=data_path)
-        fetcher.fetch_and_save(ticker, data_path)
+        fetcher.fetch_and_save([ticker], data_path)
 
         doBalance = False
 
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         
         cluster_min_count = 3
         cluster_window_days = 3
-        cluster_conf_ratio = 0.90
+        cluster_conf_ratio = 0.9
         
         # --- Confidence margins ---
         top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
@@ -203,7 +203,7 @@ if __name__ == "__main__":
     import numpy as np
     import matplotlib.pyplot as plt
     
-    def plot_ticker_probs(tickers, probs, title, color):
+    def plot_ticker_probs(tickers, probs, title, color, savepath=None):
         # Pick the first element from each sublist/array
         tickers = np.array([
             (sublist[0] if isinstance(sublist, (list, np.ndarray)) and len(sublist) > 0 else sublist)
@@ -223,29 +223,31 @@ if __name__ == "__main__":
         sorted_probs = probs[sorted_idx]
     
         # Plot
-        plt.figure(figsize=(10, 6))
-        bars = plt.bar(range(len(sorted_tickers)), sorted_probs, color=color)
-        plt.xticks(range(len(sorted_tickers)), sorted_tickers, rotation=90)
-        plt.title(title)
-        plt.ylabel("Probability")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        bars = ax.bar(range(len(sorted_tickers)), sorted_probs, color=color)
+        ax.set_xticks(range(len(sorted_tickers)))
+        ax.set_xticklabels(sorted_tickers, rotation=90)
+        ax.set_title(title)
+        ax.set_ylabel("Probability")
     
         # Add labels on top
         for bar, prob in zip(bars, sorted_probs):
-            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                     f"{prob:.2f}", ha="center", va="bottom", fontsize=8)
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
+                    f"{prob:.2f}", ha="center", va="bottom", fontsize=8)
     
-        plt.tight_layout()
+        fig.tight_layout()
         plt.show()
-
-
+        if savepath:
+            fig.savefig(savepath, bbox_inches="tight", dpi=200)
+            plt.close(fig)            
     
-    # Plot Buy tickers
-    plot_ticker_probs(buy_tickers_list, buy_probs_list, "Buy Predictions", color="green")
+    # Generate timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Plot Sell tickers
-    plot_ticker_probs(sell_tickers_list, sell_probs_list, "Sell Predictions", color="red")
-
-            
-        
+    # Plot Buy predictions
+    plot_ticker_probs(buy_tickers_list, buy_probs_list, "Buy Predictions", color="green", savepath=f"buy_predictions_{timestamp}.png")
+    
+    # Plot Sell predictions
+    plot_ticker_probs(sell_tickers_list, sell_probs_list, "Sell Predictions", color="red", savepath=f"sell_predictions_{timestamp}.png")
         
             
