@@ -120,10 +120,13 @@ def extract_entry_points_v2(pred_probs, prices, momentum_window=10, momentum_thr
     for i in range(1, len(pred_classes)):
         if pred_classes[i] != pred_classes[i-1]:
             raw_signals.append(i)
+            new_class = pred_classes[i]
+            old_class = pred_classes[i-1]
 
     # Step 2: Momentum
     momentum = prices.pct_change(momentum_window)
-
+    ma = prices.rolling(50).mean()
+    
     # Step 3: ATR / Volatility
     high = prices.rolling(2).max()
     low = prices.rolling(2).min()
@@ -138,11 +141,11 @@ def extract_entry_points_v2(pred_probs, prices, momentum_window=10, momentum_thr
 
         mom = float(momentum.iloc[idx])  # force scalar
         vol = float(atr.iloc[idx])       # force scalar
-
+        
         # Momentum logic
-        if mom > momentum_thresh:
+        if mom > momentum_thresh and (old_class == 2 or old_class == 0) and prices.iloc[idx] > ma.iloc[idx]: # coming out a berish trend
             candidate_signals.append((idx, "SELL"))
-        elif mom < -momentum_thresh:
+        elif mom < -momentum_thresh and (old_class == 1 or old_class == 0) and prices.iloc[idx] < ma.iloc[idx]: # coming out a bullish trend
             candidate_signals.append((idx, "BUY"))
         else:
             continue
