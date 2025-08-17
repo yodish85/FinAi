@@ -284,7 +284,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     filtered_test_labels = test_labels[val_shuffle_idx]
     
     # --- Dataset construction ---
-    batch_size = 32
+    batch_size = 128
     
     train_ds = tf.data.Dataset.from_tensor_slices((filtered_train_data, filtered_train_labels)) \
         .shuffle(buffer_size=len(train_data)) \
@@ -339,7 +339,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=200,
+        epochs=5,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=[early_stop]
@@ -576,9 +576,9 @@ def load_datasets(directory):
     Load the latest train/test data and labels from the directory.
     """
     train_data_path = find_latest_file(directory, "train", "data", "balanced")
-    train_labels_path = find_latest_file(directory, "train", "labels", "balanced")
+    train_labels_path = find_latest_file(directory, "train", "labels", "cluster")
     test_data_path = find_latest_file(directory, "test", "data", "balanced")
-    test_labels_path = find_latest_file(directory, "test", "labels", "balanced")
+    test_labels_path = find_latest_file(directory, "test", "labels", "cluster")
     
     # Assuming files are in .npy format; change as needed
     train_data = np.load(train_data_path, mmap_mode='r')
@@ -622,7 +622,7 @@ def get_symbols_from_folder(base_dir):
         
 if __name__ == "__main__":
     
-    loadData = False
+    loadData = True
     loadModel = False
     days_to_process = []
 

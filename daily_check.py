@@ -44,7 +44,7 @@ if __name__ == "__main__":
     
 
     data_path = "/Users/admin/FinAi/market_data"
-    days_to_process = 263 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction + 3 to compute the clusters
+    days_to_process = 270 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction + 10 to compute the clusters
     doBalance = False
 
     # Get all symbols
@@ -124,11 +124,11 @@ if __name__ == "__main__":
         # --- Thresholds ---
         buy_threshold = 0.85
         buy_margin_threshold = 0.2
-        sell_threshold = 0.75
+        sell_threshold = 0.7
         sell_margin_threshold = 0.2
         
-        cluster_min_count = 3
-        cluster_window_days = 3
+        cluster_min_count = 8
+        cluster_window_days = 10
         cluster_conf_ratio = 0.9
         
         # --- Confidence margins ---
