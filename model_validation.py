@@ -95,8 +95,6 @@ def _atr(high, low, close, period=14):
 # =========================================================
 # Entry point extraction
 # =========================================================
-import pandas as pd
-import numpy as np
 
 def extract_entry_points_v2(pred_probs, prices, momentum_window=10, momentum_thresh=0.05, atr_window=14, debug=False):
     import pandas as pd
@@ -176,8 +174,8 @@ def plot_classes_vs_price(aligned_prices, pred_classes, df_entries):
     plt.plot(aligned_prices.index, aligned_prices.values, label="Price", color="blue")
 
     # Plot predicted classes overlay
-    plt.scatter(aligned_prices.index, aligned_prices.values, 
-                c=pred_classes, cmap="coolwarm", alpha=0.3, label="Predicted class")
+    #plt.scatter(aligned_prices.index, aligned_prices.values, 
+    #            c=pred_classes, cmap="coolwarm", alpha=0.3, label="Predicted class")
 
     # Plot entries (support df or list)
     if isinstance(df_entries, pd.DataFrame):
@@ -255,7 +253,7 @@ if __name__ == "__main__":
         raw, candidates, finals = extract_entry_points_v2(pred_test, aligned_prices, debug=True)
 
         # Plot debug pipeline
-        plot_debug_signals(aligned_prices, raw, candidates, finals)
+        #plot_debug_signals(aligned_prices, raw, candidates, finals)
 
         # Also plot class overlays
         pred_classes = np.argmax(pred_test, axis=1)
