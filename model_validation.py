@@ -95,68 +95,69 @@ def _atr(high, low, close, period=14):
 # =========================================================
 # Entry point extraction
 # =========================================================
-
-def extract_entry_points_v2(pred_probs, prices, momentum_window=10, momentum_thresh=0.05, atr_window=14, debug=False):
+def extract_entry_points(pred_probs, prices, lookback_window=10, trend_ma_window=3, trend_thresh=0.02, debug=False):
     import pandas as pd
     import numpy as np
 
-    # If prices is a DataFrame, take 'Close' column
+    # Ensure series
     if isinstance(prices, pd.DataFrame):
         if "Close" in prices.columns:
             prices = prices["Close"]
         else:
-            # fall back to first column
             prices = prices.iloc[:, 0]
+
+    pred_classes = np.argmax(pred_probs, axis=1)
 
     raw_signals = []
     candidate_signals = []
     final_signals = []
 
-    pred_classes = np.argmax(pred_probs, axis=1)
+    for idx in range(lookback_window, len(prices)):
+        recent_classes = pred_classes[idx - lookback_window: idx]
 
-    # Step 1: detect transitions
-    for i in range(1, len(pred_classes)):
-        if pred_classes[i] != pred_classes[i-1]:
-            raw_signals.append(i)
-            new_class = pred_classes[i]
-            old_class = pred_classes[i-1]
-
-    # Step 2: Momentum
-    momentum = prices.pct_change(momentum_window)
-    ma = prices.rolling(50).mean()
-    
-    # Step 3: ATR / Volatility
-    high = prices.rolling(2).max()
-    low = prices.rolling(2).min()
-    close = prices
-    tr = np.maximum(high - low, np.maximum(abs(high - close.shift()), abs(low - close.shift())))
-    atr = tr.rolling(atr_window).mean()
-
-    # Step 4: Filter transitions
-    for idx in raw_signals:
-        if idx < momentum_window or idx >= len(prices):
+        # Ignore neutral
+        if (recent_classes == 0).all():
             continue
 
-        mom = float(momentum.iloc[idx])  # force scalar
-        vol = float(atr.iloc[idx])       # force scalar
-        
-        # Momentum logic
-        if mom > momentum_thresh and (old_class == 2 or old_class == 0) and prices.iloc[idx] > ma.iloc[idx]: # coming out a berish trend
-            candidate_signals.append((idx, "SELL"))
-        elif mom < -momentum_thresh and (old_class == 1 or old_class == 0) and prices.iloc[idx] < ma.iloc[idx]: # coming out a bullish trend
-            candidate_signals.append((idx, "BUY"))
+        # Detect last transition inside the window
+        transitions = np.where(np.diff(recent_classes) != 0)[0]
+        if len(transitions) > 0:
+            last_t = transitions[-1] + 1
+            recent_classes = recent_classes[last_t:]
+            recent_prices = prices.iloc[idx - lookback_window + last_t: idx]
         else:
+            recent_prices = prices.iloc[idx - lookback_window: idx]
+
+        # Skip if no class dominance
+        if len(recent_classes) == 0 or len(recent_prices) < trend_ma_window:
             continue
 
-        # Volatility filter
-        avg_vol = float(atr.rolling(atr_window).mean().iloc[idx])
-        if vol < 0.5 * avg_vol:  # skip low volatility
-            continue
+        dominant_class = recent_classes[-1]
+        if dominant_class == 0:
+            continue  # ignore neutral
 
-        final_signals.append({
-            "entry_index": idx,
-            "signal": candidate_signals[-1][1]
-        })
+        # Compute smoothed trend
+        returns = recent_prices.pct_change()
+        trend = returns.rolling(trend_ma_window).mean()
+
+        # Check last trend value
+        last_trend = trend.iloc[-1]
+
+        signal = None
+        if abs(last_trend) >= trend_thresh:
+            if last_trend > 0 and dominant_class == 2:   # bullish cluster, upward move
+                signal = "SELL"
+            elif last_trend < 0 and dominant_class == 1: # bearish cluster, downward move
+                signal = "BUY"
+
+        raw_signals.append(idx)
+
+        if signal is not None:
+            candidate_signals.append((idx, signal))
+            final_signals.append({
+                "entry_index": idx,
+                "signal": signal
+            })
 
     final_df = pd.DataFrame(final_signals)
 
@@ -165,40 +166,50 @@ def extract_entry_points_v2(pred_probs, prices, momentum_window=10, momentum_thr
 
     return raw_signals, candidate_signals, final_df
 
-
 # =========================================================
 # Plot class predictions vs prices
 # =========================================================
 def plot_classes_vs_price(aligned_prices, pred_classes, df_entries):
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
     plt.figure(figsize=(14,6))
     plt.plot(aligned_prices.index, aligned_prices.values, label="Price", color="blue")
 
-    # Plot predicted classes overlay
-    #plt.scatter(aligned_prices.index, aligned_prices.values, 
-    #            c=pred_classes, cmap="coolwarm", alpha=0.3, label="Predicted class")
-
     # Plot entries (support df or list)
+    buy_x, buy_y, sell_x, sell_y = [], [], [], []
+
     if isinstance(df_entries, pd.DataFrame):
         if not df_entries.empty:
             buys = df_entries[df_entries.signal == "BUY"].entry_index
             sells = df_entries[df_entries.signal == "SELL"].entry_index
             for idx in buys:
-                plt.scatter(aligned_prices.index[idx], aligned_prices.iloc[idx], marker="^", color="green", s=120, label="BUY entry")
+                buy_x.append(aligned_prices.index[idx])
+                buy_y.append(aligned_prices.iloc[idx])
             for idx in sells:
-                plt.scatter(aligned_prices.index[idx], aligned_prices.iloc[idx], marker="v", color="red", s=120, label="SELL entry")
+                sell_x.append(aligned_prices.index[idx])
+                sell_y.append(aligned_prices.iloc[idx])
     else:
         # list of (index, signal)
         for idx, sig in df_entries:
             if sig == "BUY":
-                plt.scatter(aligned_prices.index[idx], aligned_prices.iloc[idx], marker="^", color="green", s=120, label="BUY entry")
+                buy_x.append(aligned_prices.index[idx])
+                buy_y.append(aligned_prices.iloc[idx])
             elif sig == "SELL":
-                plt.scatter(aligned_prices.index[idx], aligned_prices.iloc[idx], marker="v", color="red", s=120, label="SELL entry")
+                sell_x.append(aligned_prices.index[idx])
+                sell_y.append(aligned_prices.iloc[idx])
+
+    # Scatter without labels
+    plt.scatter(buy_x, buy_y, marker="^", color="green", s=120)
+    plt.scatter(sell_x, sell_y, marker="v", color="red", s=120)
+
+    # Add legend handles once
+    plt.scatter([], [], marker="^", color="green", s=120, label="BUY entry")
+    plt.scatter([], [], marker="v", color="red", s=120, label="SELL entry")
 
     plt.title("Predicted Classes vs Price")
     plt.legend()
     plt.show()
-
-
 
 # =========================================================
 # Main
@@ -211,7 +222,7 @@ if __name__ == "__main__":
     model_path = "/Users/admin/FinAi"
     model = load_model(model_path)
 
-    for ticker in tickers:
+    for ticker in tickers[20:40]:
         print(f"\n--- Training model for {ticker} ---\n")
 
         # Fetch latest data
@@ -250,7 +261,7 @@ if __name__ == "__main__":
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
 
         # Extract signals
-        raw, candidates, finals = extract_entry_points_v2(pred_test, aligned_prices, debug=True)
+        raw, candidates, finals = extract_entry_points(pred_test, aligned_prices, debug=True)
 
         # Plot debug pipeline
         #plot_debug_signals(aligned_prices, raw, candidates, finals)
