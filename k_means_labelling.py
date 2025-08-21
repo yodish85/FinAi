@@ -130,24 +130,26 @@ plt.show()
 # --- NEW STEP: Filter out cluster 0, keep only clusters 1 & 2 ---
 # =====================================================================
 
-# --- Load original labels (supervised task labels) ---
-orig_labels = np.load(labels_path)
+# --- Load original one-hot encoded labels ---
+orig_labels = np.load(labels_path)   # shape: (n_samples, n_classes)
+
+print(f"Original labels shape: {orig_labels.shape}")
 
 # --- Build mask: keep clusters 1 & 2 only ---
 mask = np.isin(labels, [1, 2])
 
-# --- Apply mask consistently ---
+# --- Apply mask consistently (keep full one-hot labels) ---
 filtered_data = data[mask]
-filtered_labels = orig_labels[mask]   # keep ORIGINAL labels
+filtered_labels = orig_labels[mask, :]   # keep ALL columns of one-hot labels
 filtered_symbols = symbols[mask]
 
 print(f"Filtered data shape: {filtered_data.shape}")
-print(f"Filtered original labels shape: {filtered_labels.shape}")
+print(f"Filtered one-hot labels shape: {filtered_labels.shape}")
 print(f"Filtered symbols shape: {filtered_symbols.shape}")
 
 # --- Save filtered outputs ---
 filtered_data_filename = f"{prefix}_filtered_data_{timestamp}.npy"
-filtered_labels_filename = f"{prefix}_filtered_labels_{timestamp}.npy"   # original labels, filtered
+filtered_labels_filename = f"{prefix}_filtered_labels_{timestamp}.npy"   # one-hot, filtered
 filtered_symbols_filename = f"{prefix}_filtered_symbols_{timestamp}.npy"
 
 filtered_data_output_path = os.path.join(output_dir, filtered_data_filename)
@@ -159,6 +161,7 @@ np.save(filtered_labels_output_path, filtered_labels)
 np.save(filtered_symbols_output_path, filtered_symbols)
 
 print(f"Filtered data saved to {filtered_data_output_path}")
-print(f"Filtered original labels saved to {filtered_labels_output_path}")
+print(f"Filtered one-hot labels saved to {filtered_labels_output_path}")
 print(f"Filtered symbols saved to {filtered_symbols_output_path}")
+
 
