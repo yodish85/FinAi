@@ -6,9 +6,9 @@ import re
 import os
 
 # --- File paths ---
-file_path = "/Users/admin/FinAi/train-val-data/test_balanced_data_20250811_170036.npy"
-labels_path = "/Users/admin/FinAi/train-val-data/test_balanced_labels_20250811_170036.npy"
-symbols_path = "/Users/admin/FinAi/train-val-data/test_balanced_symbols_20250811_170036.npy"
+file_path = "/Users/admin/FinAi/train-val-data/train_balanced_data_20250811_165216.npy"
+labels_path = "/Users/admin/FinAi/train-val-data/train_balanced_labels_20250811_165216.npy"
+symbols_path = "/Users/admin/FinAi/train-val-data/train_balanced_symbols_20250811_165216.npy"
 
 # --- Load data ---
 data = np.load(file_path)
@@ -140,7 +140,7 @@ mask = np.isin(labels, [1, 2])
 
 # --- Apply mask consistently (keep full one-hot labels) ---
 filtered_data = data[mask]
-filtered_labels = orig_labels[mask, :]   # keep ALL columns of one-hot labels
+filtered_labels = orig_labels[mask]   # keep ALL columns of one-hot labels
 filtered_symbols = symbols[mask]
 
 print(f"Filtered data shape: {filtered_data.shape}")

@@ -35,7 +35,7 @@ if __name__ == "__main__":
     model_path = "/Users/admin/FinAi"
     model = load_model(model_path)
 
-    for ticker in tickers:
+    for ticker in tickers[1:100]:
         print(f"\n--- Training model for {ticker} ---\n")
 
         # Fetch latest data
