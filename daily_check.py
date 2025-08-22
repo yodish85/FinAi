@@ -122,13 +122,13 @@ if __name__ == "__main__":
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
         
         # --- Thresholds ---
-        buy_threshold = 0.85
+        buy_threshold = 0.9
         buy_margin_threshold = 0.2
-        sell_threshold = 0.75
+        sell_threshold = 0.8
         sell_margin_threshold = 0.2
         
-        cluster_min_count = 3
-        cluster_window_days = 3
+        cluster_min_count = 1
+        cluster_window_days = 1
         cluster_conf_ratio = 0.9
         
         # --- Confidence margins ---

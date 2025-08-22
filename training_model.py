@@ -199,7 +199,7 @@ def build_model(input_shape, num_classes=3):
 
     # BiLSTM
     x = tf.keras.layers.Bidirectional(
-        tf.keras.layers.LSTM(256, return_sequences=False, dropout=0.3, recurrent_dropout=0.3,
+        tf.keras.layers.LSTM(128, return_sequences=False, dropout=0.4, recurrent_dropout=0.4,
              kernel_regularizer=tf.keras.regularizers.l2(0.03))
     )(x)
     x = tf.keras.layers.BatchNormalization()(x)
@@ -208,14 +208,12 @@ def build_model(input_shape, num_classes=3):
     #x = Attention()(x)
 
     # Dense layers
-    x = tf.keras.layers.Dense(256, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
     x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
     x = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
     x = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
     # Output
     outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
 
@@ -333,7 +331,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     model.compile(optimizer=optimizer, loss=loss_fn, metrics=['accuracy'])
     
     # --- Callbacks ---
-    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=50, restore_best_weights=True)
     
     # --- Train ---
     history = model.fit(
@@ -575,10 +573,10 @@ def load_datasets(directory):
     """
     Load the latest train/test data and labels from the directory.
     """
-    train_data_path = find_latest_file(directory, "train", "data", "balanced")
-    train_labels_path = find_latest_file(directory, "train", "labels", "balanced")
-    test_data_path = find_latest_file(directory, "test", "data", "balanced")
-    test_labels_path = find_latest_file(directory, "test", "labels", "balanced")
+    train_data_path = find_latest_file(directory, "train", "data", "filtered")
+    train_labels_path = find_latest_file(directory, "train", "labels", "filtered")
+    test_data_path = find_latest_file(directory, "test", "data", "filtered")
+    test_labels_path = find_latest_file(directory, "test", "labels", "filtered")
     
     # Assuming files are in .npy format; change as needed
     train_data = np.load(train_data_path, mmap_mode='r')
@@ -622,7 +620,7 @@ def get_symbols_from_folder(base_dir):
         
 if __name__ == "__main__":
     
-    loadData = False
+    loadData = True
     loadModel = False
     days_to_process = []
 

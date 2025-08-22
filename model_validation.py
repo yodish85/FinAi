@@ -35,7 +35,7 @@ if __name__ == "__main__":
     model_path = "/Users/admin/FinAi"
     model = load_model(model_path)
 
-    for ticker in tickers:
+    for ticker in tickers[1:100]:
         print(f"\n--- Training model for {ticker} ---\n")
 
         # Fetch latest data
@@ -94,8 +94,8 @@ if __name__ == "__main__":
         sell_threshold = 0.8
         sell_margin_threshold = 0.2
         
-        cluster_min_count = 3
-        cluster_window_days = 3
+        cluster_min_count = 1
+        cluster_window_days = 1
         cluster_conf_ratio = 0.90
         
         # --- Confidence margins ---
