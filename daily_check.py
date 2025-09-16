@@ -117,13 +117,13 @@ if __name__ == "__main__":
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
         
         # --- Thresholds ---
-        buy_threshold = 0.9
+        buy_threshold = 0.85
         buy_margin_threshold = 0.0
-        sell_threshold = 0.82
+        sell_threshold = 0.75
         sell_margin_threshold = 0.0
         
-        cluster_min_count = 1
-        cluster_window_days = 1
+        cluster_min_count = 2
+        cluster_window_days = 2
         cluster_conf_ratio = 0.9
         
         # --- Moving Average (50-day) ---
@@ -170,10 +170,6 @@ if __name__ == "__main__":
         
         # --- Apply mask for confident predictions ---
         df_confident = df_preds[buy_mask | sell_mask].copy()
-        
-        # --- Keep only the last day ---
-        last_day = aligned_prices.index[-1]
-        df_confident = df_confident[df_confident["date"] == last_day]
         
         # --- Apply cluster filter (optional here, but with one day it will just pass through) ---
         df_clustered = model_validation.filter_by_cluster_rule(
@@ -246,9 +242,9 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Plot Buy predictions
-    plot_ticker_probs(buy_tickers_list, buy_probs_list, "Buy Predictions", color="green", savepath=f"buy_predictions_{timestamp}.png")
+    plot_ticker_probs(buy_tickers_list, buy_probs_list, "Buy Predictions", color="green", savepath=f"predictions/buy_predictions_{timestamp}.png")
     
     # Plot Sell predictions
-    plot_ticker_probs(sell_tickers_list, sell_probs_list, "Sell Predictions", color="red", savepath=f"sell_predictions_{timestamp}.png")
+    plot_ticker_probs(sell_tickers_list, sell_probs_list, "Sell Predictions", color="red", savepath=f"predictions/sell_predictions_{timestamp}.png")
         
             
