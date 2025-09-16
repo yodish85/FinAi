@@ -96,20 +96,33 @@ class StockFetcher:
             print(f"⚠️ {idx_name} scrape failed ({e}), using fallback ETF(s)")
             return self.fallback[idx_name]
 
+    import os
+    import yfinance as yf
+    
     def fetch_and_save(self, symbols, out_folder):
-        """Download and save each symbol's CSV into out_folder."""
+        """Download and save each symbol's CSV into out_folder, deleting existing files first."""
         os.makedirs(out_folder, exist_ok=True)
         symbols = sorted(set(symbols))  # deduplicate
+        
         for sym in symbols:
             try:
                 df = yf.download(sym, start=self.start, end=self.end, progress=False)
                 if df.empty:
                     print(f"   ⚠️ {sym}: no data")
                     continue
+    
                 path = os.path.join(out_folder, f"{sym}.csv")
+    
+                # delete existing file if present
+                if os.path.exists(path):
+                    os.remove(path)
+    
                 df.to_csv(path)
+                print(f"   ✅ {sym}: saved to {path}")
+    
             except Exception as ex:
                 print(f"   ❌ {sym}: {ex}")
+
 
     def run(self):
         """Main pipeline to fetch and store train/validation data"""

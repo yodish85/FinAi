@@ -19,6 +19,8 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import yfinance as yf
 import pandas as pd
+import model_validation
+importlib.reload(model_validation)
 
 def load_model(path):
     # Search for the latest .keras or .h5 model file
@@ -42,24 +44,16 @@ def load_model(path):
 
 if __name__ == "__main__":
     
-
     data_path = "/Users/admin/FinAi/market_data"
     days_to_process = 263 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction + 3 to compute the clusters
     doBalance = False
 
     # Get all symbols
-    directory = '/Users/admin/FinAi/market_data/train'
+    directory = '/Users/admin/FinAi/market_data/'
     files = os.listdir(directory)
     # Get tickers from training
-    train_symbols = training_model.get_symbols_from_folder(directory)
-    
-    directory = '/Users/admin/FinAi/market_data/validation'
-    files = os.listdir(directory)
-    # Get tickers from training
-    val_symbols = training_model.get_symbols_from_folder(directory)
-    
-    all_symbols = train_symbols + val_symbols
-    
+    all_symbols = training_model.get_symbols_from_folder(directory)
+        
     # --- Initialize before the loop ---
     sell_probs_list = []
     sell_tickers_list = []
@@ -76,8 +70,6 @@ if __name__ == "__main__":
         print("🔄 Fetching fresh data...")
         fetcher = StockFetcher(base_path=data_path)
         fetcher.fetch_and_save([ticker], data_path)
-
-        doBalance = False
 
         result = extract_features_with_fft.extract_features_with_fft(
             [ticker], data_path, True, 'daily', days_to_process, doBalance
@@ -102,7 +94,10 @@ if __name__ == "__main__":
         if len(aligned_prices) != len(tr_labels):
             print(f"[Error] Label-price mismatch for {ticker}")
             continue
-
+        
+        print(len(tr_labels), len(aligned_prices))
+        print(aligned_prices.index[0], aligned_prices.index[-1])
+        
         # Actual buy/sell signals from labels
         buy_indices = np.where(tr_labels == 2)[0]
         sell_indices = np.where(tr_labels == 1)[0]
@@ -123,22 +118,47 @@ if __name__ == "__main__":
         
         # --- Thresholds ---
         buy_threshold = 0.9
-        buy_margin_threshold = 0.2
-        sell_threshold = 0.8
-        sell_margin_threshold = 0.2
+        buy_margin_threshold = 0.0
+        sell_threshold = 0.82
+        sell_margin_threshold = 0.0
         
         cluster_min_count = 1
         cluster_window_days = 1
         cluster_conf_ratio = 0.9
         
+        # --- Moving Average (50-day) ---
+        prices_np = aligned_prices.to_numpy().ravel()   # ensures 1D
+
+        # 50-day simple moving average (SMA) via convolution
+        # 50-day simple moving average (SMA)
+        ma50 = df["Close"].rolling(window=50, min_periods=1).mean()
+        n_preds = len(pred_test)
+        ma50_last = ma50.iloc[-n_preds:].to_numpy()
+
+        # Match last N prices/MA with pred_test length
+        prices_np_last = prices_np[-n_preds:]
+        ma50_last = ma50[-n_preds:].to_numpy()
+
         # --- Confidence margins ---
         top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
         margins = top2_sorted[:, 1] - top2_sorted[:, 0]
         max_probs = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
         
-        buy_mask = (pred_classes == 2) & (max_probs > buy_threshold) & (margins > buy_margin_threshold)
-        sell_mask = (pred_classes == 1) & (max_probs > sell_threshold) & (margins > sell_margin_threshold)
+        # --- Buy/Sell conditions with MA filter ---
+        buy_mask = (
+            (pred_classes == 2) &
+            (max_probs > buy_threshold) &
+            (margins > buy_margin_threshold) &
+            (prices_np_last < ma50_last)     
+        )
+        
+        sell_mask = (
+            (pred_classes == 1) &
+            (max_probs > sell_threshold) &
+            (margins > sell_margin_threshold) &
+            (prices_np_last > ma50_last)     
+        )
         
         # --- Build DataFrame for filtering ---
         df_preds = pd.DataFrame({
@@ -151,27 +171,12 @@ if __name__ == "__main__":
         # --- Apply mask for confident predictions ---
         df_confident = df_preds[buy_mask | sell_mask].copy()
         
-        # --- Cluster filter ---
-        def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
-            keep_indices = []
-            for i, row in df.iterrows():
-                cls = row["cls"]
-                date = row["date"]
+        # --- Keep only the last day ---
+        last_day = aligned_prices.index[-1]
+        df_confident = df_confident[df_confident["date"] == last_day]
         
-                start_date = date - pd.Timedelta(days=window_days)
-                window = df[(df["cls"] == cls) &
-                            (df["date"] >= start_date) &
-                            (df["date"] <= date)]
-        
-                if not window.empty:
-                    max_conf = window["confidence"].max()
-                    high_conf_count = (window["confidence"] >= max_conf * conf_ratio).sum()
-                    if high_conf_count >= min_count:
-                        keep_indices.append(i)
-        
-            return df.loc[keep_indices]
-        
-        df_clustered = filter_by_cluster_rule(
+        # --- Apply cluster filter (optional here, but with one day it will just pass through) ---
+        df_clustered = model_validation.filter_by_cluster_rule(
             df_confident,
             min_count=cluster_min_count,
             window_days=cluster_window_days,
@@ -186,34 +191,29 @@ if __name__ == "__main__":
         sell_probs = df_clustered[df_clustered["cls"] == 1]["confidence"].values
         
         if not sell_pred_idxs.empty:
-            sell_probs_arr = df_clustered.loc[sell_pred_idxs, "confidence"].to_numpy()
-            sell_tickers_arr = all_symbols[i]
-        
-            sell_probs_list.append(sell_probs_arr)
-            sell_tickers_list.append(sell_tickers_arr)
+            best_idx = df_clustered.loc[sell_pred_idxs, "confidence"].idxmax()
+            sell_probs_list.append(df_clustered.loc[best_idx, "confidence"])
+            sell_tickers_list.append(ticker)
         
         if not buy_pred_idxs.empty:
-            buy_probs_arr = df_clustered.loc[buy_pred_idxs, "confidence"].to_numpy()
-            buy_tickers_arr = all_symbols[i]
-        
-            buy_probs_list.append(buy_probs_arr)
-            buy_tickers_list.append(buy_tickers_arr)
+            best_idx = df_clustered.loc[buy_pred_idxs, "confidence"].idxmax()
+            buy_probs_list.append(df_clustered.loc[best_idx, "confidence"])
+            buy_tickers_list.append(ticker)
+
+
 
 
     import numpy as np
-    import matplotlib.pyplot as plt
     
     def plot_ticker_probs(tickers, probs, title, color, savepath=None):
-        # Pick the first element from each sublist/array
-        tickers = np.array([
-            (sublist[0] if isinstance(sublist, (list, np.ndarray)) and len(sublist) > 0 else sublist)
-            for sublist in tickers
-        ])
+        tickers = np.array(tickers)
         probs = np.array([
-            (sublist[0] if isinstance(sublist, (list, np.ndarray)) and len(sublist) > 0 else sublist)
-            for sublist in probs
-        ])
-    
+        float(p[0]) if isinstance(p, (list, np.ndarray)) else 
+        float(p.iloc[0]) if isinstance(p, pd.Series) else 
+        float(p)
+        for p in probs
+    ])
+
         if len(tickers) != len(probs):
             raise ValueError(f"Length mismatch: {len(tickers)} tickers vs {len(probs)} probs")
     
@@ -239,7 +239,8 @@ if __name__ == "__main__":
         plt.show()
         if savepath:
             fig.savefig(savepath, bbox_inches="tight", dpi=200)
-            plt.close(fig)            
+            plt.close(fig)
+         
     
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
