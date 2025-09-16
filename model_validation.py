@@ -23,19 +23,40 @@ import daily_check
 importlib.reload(daily_check)
 
 from StockFetcher import StockFetcher
-from daily_check import load_model
 from training_model import get_symbols_from_folder
 import pandas as pd
 
+
+# --- Cluster filter ---        
+def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
+    keep_indices = []
+    df = df.sort_values(["cls", "date"]).reset_index(drop=False)  # keep original index
+    
+    for cls, group in df.groupby("cls"):
+        for i in range(len(group)):
+            # Look back up to `window_days` rows, not just time
+            window = group.iloc[max(0, i - window_days + 1): i + 1]
+            
+            # Check if dates are consecutive with no gaps
+            consecutive = (window["date"].diff().dt.days.dropna() == 1).all()
+            
+            if len(window) >= min_count and consecutive:
+                max_conf = window["confidence"].max()
+                high_conf_count = (window["confidence"] >= max_conf * conf_ratio).sum()
+                if high_conf_count >= min_count:
+                    keep_indices.append(group.iloc[i]["index"])  # use original index
+    
+    return df.set_index("index").loc[keep_indices]
+
 if __name__ == "__main__":
-    data_path = "/Users/admin/FinAi/market_data/train"
+    data_path = "/Users/admin/FinAi/market_data/"
     tickers = get_symbols_from_folder(data_path)
     
     # Load model
     model_path = "/Users/admin/FinAi"
-    model = load_model(model_path)
+    model = daily_check.load_model(model_path)
 
-    for ticker in tickers[1:100]:
+    for ticker in tickers[40:80]:
         print(f"\n--- Training model for {ticker} ---\n")
 
         # Fetch latest data
@@ -69,11 +90,14 @@ if __name__ == "__main__":
         if len(aligned_prices) != len(tr_labels):
             print(f"[Error] Label-price mismatch for {ticker}")
             continue
+        
+        print(len(tr_labels), len(aligned_prices))
+        print(aligned_prices.index[0], aligned_prices.index[-1])
 
         # Actual buy/sell signals from labels
         buy_indices = np.where(tr_labels == 2)[0]
         sell_indices = np.where(tr_labels == 1)[0]
-
+        '''
         # Plot actual buy/sell
         plt.figure(figsize=(14, 6))
         plt.plot(aligned_prices, label='Price')
@@ -83,20 +107,27 @@ if __name__ == "__main__":
         plt.legend()
         plt.tight_layout()
         plt.show()
-
+        '''
         # --- Predict all at once (batch mode) ---
         pred_test = model.predict(tr_data)
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
         
         # --- Thresholds ---
-        buy_threshold = 0.9
-        buy_margin_threshold = 0.2
-        sell_threshold = 0.8
-        sell_margin_threshold = 0.2
+        buy_threshold = 0.85
+        buy_margin_threshold = 0.0
+        sell_threshold = 0.75
+        sell_margin_threshold = 0.0
         
-        cluster_min_count = 1
-        cluster_window_days = 1
-        cluster_conf_ratio = 0.90
+        cluster_min_count = 2
+        cluster_window_days = 2
+        cluster_conf_ratio = 0.9
+        
+        # --- Moving Average (50-day) ---
+        prices_np = aligned_prices.to_numpy().ravel()   # ensures 1D
+
+        # 50-day simple moving average (SMA) via convolution
+        weights = np.ones(50) / 50
+        ma50 = np.convolve(prices_np, weights, mode="same")
         
         # --- Confidence margins ---
         top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
@@ -104,9 +135,22 @@ if __name__ == "__main__":
         max_probs = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
         
-        buy_mask = (pred_classes == 2) & (max_probs > buy_threshold) & (margins > buy_margin_threshold)
-        sell_mask = (pred_classes == 1) & (max_probs > sell_threshold) & (margins > sell_margin_threshold)
+        # --- Buy/Sell conditions with MA filter ---
+        buy_mask = (
+            (pred_classes == 2) &
+            (max_probs > buy_threshold) &
+            (margins > buy_margin_threshold) &
+            (prices_np < ma50)     # must be above MA50 for buy
+        )
         
+        sell_mask = (
+            (pred_classes == 1) &
+            (max_probs > sell_threshold) &
+            (margins > sell_margin_threshold) &
+            (prices_np > ma50)     
+        )
+
+
         # --- Build DataFrame for filtering ---
         df_preds = pd.DataFrame({
             "date": aligned_prices.index,
@@ -117,26 +161,6 @@ if __name__ == "__main__":
         
         # --- Apply mask for confident predictions ---
         df_confident = df_preds[buy_mask | sell_mask].copy()
-        
-        # --- Cluster filter ---
-        def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
-            keep_indices = []
-            for i, row in df.iterrows():
-                cls = row["cls"]
-                date = row["date"]
-        
-                start_date = date - pd.Timedelta(days=window_days)
-                window = df[(df["cls"] == cls) &
-                            (df["date"] >= start_date) &
-                            (df["date"] <= date)]
-        
-                if not window.empty:
-                    max_conf = window["confidence"].max()
-                    high_conf_count = (window["confidence"] >= max_conf * conf_ratio).sum()
-                    if high_conf_count >= min_count:
-                        keep_indices.append(i)
-        
-            return df.loc[keep_indices]
         
         df_clustered = filter_by_cluster_rule(
             df_confident,
@@ -186,3 +210,4 @@ if __name__ == "__main__":
         plt.legend()
         plt.tight_layout()
         plt.show()
+        
