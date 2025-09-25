@@ -55,14 +55,14 @@ if __name__ == "__main__":
     # Load model
     model_path = "/Users/admin/FinAi"
     model = daily_check.load_model(model_path)
-
-    for ticker in tickers[40:80]:
+    #tickers = ["FLO", "KDP", "SAP.DE", "DHL.DE", "BEI.DE"]
+    for ticker in tickers[50:150]:
         print(f"\n--- Training model for {ticker} ---\n")
 
         # Fetch latest data
         print("🔄 Fetching fresh data...")
         fetcher = StockFetcher(base_path=data_path)
-        fetcher.fetch_and_save(ticker, data_path)
+        fetcher.fetch_and_save([ticker], data_path)
 
         days_to_process = 1000
         doBalance = False
@@ -95,8 +95,8 @@ if __name__ == "__main__":
         print(aligned_prices.index[0], aligned_prices.index[-1])
 
         # Actual buy/sell signals from labels
-        buy_indices = np.where(tr_labels == 2)[0]
-        sell_indices = np.where(tr_labels == 1)[0]
+        buy_indices = np.where(tr_labels == 1)[0]
+        sell_indices = np.where(tr_labels == 0)[0]
         '''
         # Plot actual buy/sell
         plt.figure(figsize=(14, 6))
@@ -113,21 +113,25 @@ if __name__ == "__main__":
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
         
         # --- Thresholds ---
-        buy_threshold = 0.85
-        buy_margin_threshold = 0.0
-        sell_threshold = 0.75
-        sell_margin_threshold = 0.0
+        buy_threshold = 0.9
+        buy_margin_threshold = 0.2
+        sell_threshold = 0.9
+        sell_margin_threshold = 0.2
         
         cluster_min_count = 2
         cluster_window_days = 2
-        cluster_conf_ratio = 0.9
+        cluster_conf_ratio = 0.99
         
         # --- Moving Average (50-day) ---
         prices_np = aligned_prices.to_numpy().ravel()   # ensures 1D
 
         # 50-day simple moving average (SMA) via convolution
-        weights = np.ones(50) / 50
-        ma50 = np.convolve(prices_np, weights, mode="same")
+        ma50 = df["Close"].rolling(window=50, min_periods=1).mean()
+        ma10 = df["Close"].rolling(window=10, min_periods=1).mean()
+
+        n_preds = len(pred_test)
+        ma50_last = ma50.iloc[-n_preds:].to_numpy().ravel()
+        ma10_last = ma10.iloc[-n_preds:].to_numpy().ravel()
         
         # --- Confidence margins ---
         top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
@@ -137,24 +141,26 @@ if __name__ == "__main__":
         
         # --- Buy/Sell conditions with MA filter ---
         buy_mask = (
-            (pred_classes == 2) &
+            (pred_classes == 1) &
             (max_probs > buy_threshold) &
             (margins > buy_margin_threshold) &
-            (prices_np < ma50)     # must be above MA50 for buy
+            (prices_np < ma50_last) &
+            (ma10_last > ma50_last)# must be above MA50 for buy
         )
         
         sell_mask = (
-            (pred_classes == 1) &
+            (pred_classes == 0) &
             (max_probs > sell_threshold) &
             (margins > sell_margin_threshold) &
-            (prices_np > ma50)     
+            (prices_np > ma50_last) &
+            (ma10_last < ma50_last)# must be above MA50 for buy
         )
 
 
         # --- Build DataFrame for filtering ---
         df_preds = pd.DataFrame({
             "date": aligned_prices.index,
-            "price": aligned_prices.squeeze().values,
+            "price": aligned_prices.values.ravel(),
             "cls": pred_classes,
             "confidence": max_probs
         })
@@ -170,11 +176,11 @@ if __name__ == "__main__":
         )
         
         # --- Separate final buy/sell indices ---
-        buy_pred_idxs = df_clustered.index[df_clustered["cls"] == 2]
-        sell_pred_idxs = df_clustered.index[df_clustered["cls"] == 1]
+        buy_pred_idxs = df_clustered.index[df_clustered["cls"] == 1]
+        sell_pred_idxs = df_clustered.index[df_clustered["cls"] == 0]
         
-        buy_probs = df_clustered[df_clustered["cls"] == 2]["confidence"].values
-        sell_probs = df_clustered[df_clustered["cls"] == 1]["confidence"].values
+        buy_probs = df_clustered[df_clustered["cls"] == 1]["confidence"].values
+        sell_probs = df_clustered[df_clustered["cls"] == 0]["confidence"].values
         
         # --- Plot predictions ---
         plt.figure(figsize=(14, 6))
@@ -199,13 +205,13 @@ if __name__ == "__main__":
             y_text = y - 0.03 * aligned_prices.max()
             plt.plot([x, x], [y, y_text], 'k--', linewidth=0.5)
             plt.text(x, y_text, f"{prob:.2f}", color='black', fontsize=8, ha='center')
-        
+        '''
         # Actual labels (for reference)
         plt.plot(aligned_prices.index[buy_indices], aligned_prices.iloc[buy_indices],
                  'g^', markersize=10, label='Buy')
         plt.plot(aligned_prices.index[sell_indices], aligned_prices.iloc[sell_indices],
                  'rv', markersize=10, label='Sell')
-        
+        '''
         plt.title(f"{ticker} — Cluster-Filtered Buy/Sell Predictions vs Actual")
         plt.legend()
         plt.tight_layout()

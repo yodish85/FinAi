@@ -45,7 +45,7 @@ def load_model(path):
 if __name__ == "__main__":
     
     data_path = "/Users/admin/FinAi/market_data"
-    days_to_process = 263 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction + 3 to compute the clusters
+    days_to_process = 264 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction + 4 to compute the clusters
     doBalance = False
 
     # Get all symbols
@@ -99,8 +99,8 @@ if __name__ == "__main__":
         print(aligned_prices.index[0], aligned_prices.index[-1])
         
         # Actual buy/sell signals from labels
-        buy_indices = np.where(tr_labels == 2)[0]
-        sell_indices = np.where(tr_labels == 1)[0]
+        buy_indices = np.where(tr_labels == 1)[0]
+        sell_indices = np.where(tr_labels == 0)[0]
         '''
         # Plot actual buy/sell
         plt.figure(figsize=(14, 6))
@@ -117,27 +117,29 @@ if __name__ == "__main__":
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
         
         # --- Thresholds ---
-        buy_threshold = 0.85
-        buy_margin_threshold = 0.0
-        sell_threshold = 0.75
-        sell_margin_threshold = 0.0
+        buy_threshold = 0.9
+        buy_margin_threshold = 0.2
+        sell_threshold = 0.9
+        sell_margin_threshold = 0.2
         
         cluster_min_count = 2
         cluster_window_days = 2
-        cluster_conf_ratio = 0.9
+        cluster_conf_ratio = 0.99
         
         # --- Moving Average (50-day) ---
         prices_np = aligned_prices.to_numpy().ravel()   # ensures 1D
 
-        # 50-day simple moving average (SMA) via convolution
         # 50-day simple moving average (SMA)
         ma50 = df["Close"].rolling(window=50, min_periods=1).mean()
+        mashort = df["Close"].rolling(window=10, min_periods=1).mean()
+
         n_preds = len(pred_test)
-        ma50_last = ma50.iloc[-n_preds:].to_numpy()
+        ma50_last = ma50.iloc[-n_preds:].to_numpy().ravel()
+        mashort_last = mashort.iloc[-n_preds:].to_numpy().ravel()
+        
 
         # Match last N prices/MA with pred_test length
         prices_np_last = prices_np[-n_preds:]
-        ma50_last = ma50[-n_preds:].to_numpy()
 
         # --- Confidence margins ---
         top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
@@ -147,23 +149,25 @@ if __name__ == "__main__":
         
         # --- Buy/Sell conditions with MA filter ---
         buy_mask = (
-            (pred_classes == 2) &
+            (pred_classes == 1) &
             (max_probs > buy_threshold) &
             (margins > buy_margin_threshold) &
-            (prices_np_last < ma50_last)     
+            (prices_np_last < ma50_last) &
+            (mashort_last > ma50_last) # must be above MA50 for buy
         )
         
         sell_mask = (
-            (pred_classes == 1) &
+            (pred_classes == 0) &
             (max_probs > sell_threshold) &
             (margins > sell_margin_threshold) &
-            (prices_np_last > ma50_last)     
+            (prices_np_last > ma50_last) &
+            (mashort_last < ma50_last) # must be below MA50 for buy
         )
         
         # --- Build DataFrame for filtering ---
         df_preds = pd.DataFrame({
             "date": aligned_prices.index,
-            "price": aligned_prices.squeeze().values,
+            "price": aligned_prices.values.ravel(),
             "cls": pred_classes,
             "confidence": max_probs
         })
@@ -180,8 +184,8 @@ if __name__ == "__main__":
         )
         
         # --- Separate final buy/sell indices ---
-        buy_pred_idxs = df_clustered.index[df_clustered["cls"] == 2]
-        sell_pred_idxs = df_clustered.index[df_clustered["cls"] == 1]
+        buy_pred_idxs = df_clustered.index[df_clustered["cls"] == 1]
+        sell_pred_idxs = df_clustered.index[df_clustered["cls"] == 0]
         
         buy_probs = df_clustered[df_clustered["cls"] == 2]["confidence"].values
         sell_probs = df_clustered[df_clustered["cls"] == 1]["confidence"].values
