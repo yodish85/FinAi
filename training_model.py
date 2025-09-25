@@ -195,11 +195,11 @@ def build_model(input_shape, num_classes=3):
     inputs = tf.keras.Input(shape=input_shape)
     
     # Residual Conv block
-    x = residual_conv_block(inputs, filters=32, kernel_size=16)
+    x = residual_conv_block(inputs, filters=4, kernel_size=16)
 
     # BiLSTM
     x = tf.keras.layers.Bidirectional(
-        tf.keras.layers.LSTM(128, return_sequences=False, dropout=0.4, recurrent_dropout=0.4,
+        tf.keras.layers.LSTM(16, return_sequences=False, dropout=0.4, recurrent_dropout=0.4,
              kernel_regularizer=tf.keras.regularizers.l2(0.03))
     )(x)
     x = tf.keras.layers.BatchNormalization()(x)
@@ -208,11 +208,9 @@ def build_model(input_shape, num_classes=3):
     #x = Attention()(x)
 
     # Dense layers
-    x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
+    x = tf.keras.layers.Dense(16, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
     x = tf.keras.layers.Dropout(0.4)(x)
-    x = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.Dropout(0.4)(x)
-    x = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
+    x = tf.keras.layers.Dense(8, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
     x = tf.keras.layers.Dropout(0.4)(x)
     # Output
     outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
@@ -299,7 +297,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     validation_steps = len(test_data) // batch_size
     
     # --- Model setup ---
-    num_classes = 3
+    num_classes = 2
     input_shape = filtered_train_data.shape[1:]
     
     # Compute class weights
@@ -337,7 +335,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=200,
+        epochs=100,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=[early_stop]
@@ -380,9 +378,8 @@ def train_model(train_data, train_labels, test_data, test_labels):
     plt.show()
 
     # Probability plot
-    plt.plot(pred_test[:,0], label='Predicted Hold')
-    plt.plot(pred_test[:,1], label='Predicted Buy')
-    plt.plot(pred_test[:,2], label='Predicted Sell')
+    plt.plot(pred_test[:,0], label='Predicted Buy')
+    plt.plot(pred_test[:,1], label='Predicted Sell')
     plt.legend()
     plt.title("Probability of hold/buy/sell")
     plt.show()
@@ -421,12 +418,6 @@ def train_model(train_data, train_labels, test_data, test_labels):
     # --- Extract predicted and true classes for confident samples ---
     confident_preds = np.argmax(pred_test[confident_idxs], axis=1)
     confident_trues = np.argmax(filtered_test_labels[confident_idxs], axis=1)
-    
-    # Filter out neutral class (label=0)
-    mask = (confident_trues != 0) & (confident_preds != 0)
-
-    confident_preds = confident_preds[mask]
-    confident_trues = confident_trues[mask]
 
     diff_pred = confident_preds - confident_trues
 
@@ -499,7 +490,7 @@ def load_and_run_model(path, train_data, train_labels, test_data, test_labels):
     # Confusion plot
     pred_classes = np.argmax(pred_test, axis=1)
     true_classes = np.argmax(test_labels, axis=1)
-    indices_1_or_2 = np.where((true_classes == 1) | (true_classes == 2))[0]
+    indices_1_or_2 = np.where((true_classes == 0) | (true_classes == 1))[0]
 
     plt.plot(pred_classes, label='Predicted')
     plt.plot(true_classes, label='True')
@@ -535,12 +526,6 @@ def load_and_run_model(path, train_data, train_labels, test_data, test_labels):
     # --- Extract predicted and true classes for confident samples ---
     confident_preds = np.argmax(pred_test[confident_idxs], axis=1)
     confident_trues = np.argmax(test_labels[confident_idxs], axis=1)
-    
-    # Filter out neutral class (label=0)
-    mask = (confident_trues != 0) & (confident_preds != 0)
-
-    confident_preds = confident_preds[mask]
-    confident_trues = confident_trues[mask]
 
     diff_pred = confident_preds - confident_trues
 
@@ -573,10 +558,10 @@ def load_datasets(directory):
     """
     Load the latest train/test data and labels from the directory.
     """
-    train_data_path = find_latest_file(directory, "train", "data", "filtered")
-    train_labels_path = find_latest_file(directory, "train", "labels", "filtered")
-    test_data_path = find_latest_file(directory, "test", "data", "filtered")
-    test_labels_path = find_latest_file(directory, "test", "labels", "filtered")
+    train_data_path = find_latest_file(directory, "train", "data", "binary")
+    train_labels_path = find_latest_file(directory, "train", "labels", "binary")
+    test_data_path = find_latest_file(directory, "test", "data", "binary")
+    test_labels_path = find_latest_file(directory, "test", "labels", "binary")
     
     # Assuming files are in .npy format; change as needed
     train_data = np.load(train_data_path, mmap_mode='r')
@@ -586,8 +571,10 @@ def load_datasets(directory):
 
     print(f"Loaded:\n  Train Data: {train_data_path}\n  Train Labels: {train_labels_path}")
     print(f"  Test Data: {test_data_path}\n  Test Labels: {test_labels_path}")
-    train_labels = tf.keras.utils.to_categorical(train_labels, num_classes=3)
-    test_labels = tf.keras.utils.to_categorical(test_labels, num_classes=3)
+    train_labels = train_labels - 1
+    test_labels = test_labels - 1
+    train_labels = tf.keras.utils.to_categorical(train_labels, num_classes=2)
+    test_labels = tf.keras.utils.to_categorical(test_labels, num_classes=2)
 
     return train_data, train_labels, test_data, test_labels
 
