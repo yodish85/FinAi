@@ -26,6 +26,108 @@ from StockFetcher import StockFetcher
 from training_model import get_symbols_from_folder
 import pandas as pd
 
+def strict_rolling_extrema(prices, lookback=5, threshold=0.01, mode="min"):
+    """
+    Detects strict local extrema (minima for buys, maxima for sells).
+
+    Args:
+        prices (array-like): Price series.
+        lookback (int): Window size for rolling min/max and mean.
+        threshold (float): Deviation from rolling mean required (e.g. 0.01 = 1%).
+        mode (str): "min" for minima (buy), "max" for maxima (sell).
+
+    Returns:
+        np.ndarray: Boolean mask of extrema.
+    """
+    s = pd.Series(prices)
+    rolling_mean = s.rolling(lookback, center=True, min_periods=1).mean()
+
+    if mode == "min":  # Buy condition
+        rolling_ext = s.rolling(lookback, center=True, min_periods=1).min()
+        mask = (s == rolling_ext) & (s < (rolling_mean * (1 - threshold)))
+
+    elif mode == "max":  # Sell condition
+        rolling_ext = s.rolling(lookback, center=True, min_periods=1).max()
+        mask = (s == rolling_ext) & (s > (rolling_mean * (1 + threshold)))
+
+    else:
+        raise ValueError("mode must be 'min' or 'max'")
+
+    return mask.fillna(False).to_numpy()
+
+def ma_trend_filter(prices, short=5, long=20, margin=0.01, mode="bull"):
+    """
+    Trend filter for buy/sell signals.
+
+    Args:
+        prices (array-like): Price series.
+        short (int): Short moving average window.
+        long (int): Long moving average window.
+        margin (float): % margin above/below long MA.
+        mode (str): "bull" for buy filter, "bear" for sell filter.
+
+    Returns:
+        np.ndarray: Boolean mask of trend conditions.
+    """
+    s = pd.Series(prices)
+    ma_short = s.rolling(short, min_periods=1).mean()
+    ma_long = s.rolling(long, min_periods=1).mean()
+
+    # slopes
+    ma_short_diff = ma_short.diff()
+    ma_long_diff = ma_long.diff()
+
+    if mode == "bull":  # Buy trend
+        mask = (ma_short > ma_long) & (ma_short_diff > 0) & (ma_long_diff > 0)
+        mask = mask & (s > ma_long * (1 + margin))
+
+    elif mode == "bear":  # Sell trend
+        mask = (ma_short < ma_long) & (ma_short_diff < 0) & (ma_long_diff < 0)
+        mask = mask & (s < ma_long * (1 - margin))
+
+    else:
+        raise ValueError("mode must be 'bull' or 'bear'")
+
+    return mask.fillna(False).to_numpy()
+
+def decluster_signals(signal_mask, min_gap=10, mode="first"):
+    """
+    Decluster signals by enforcing a minimum gap between them.
+    
+    Args:
+        signal_mask (np.ndarray): Boolean mask of signals.
+        min_gap (int): Minimum number of bars between signals.
+        mode (str): 
+            "first" -> keep the first signal in each cluster
+            "last"  -> keep the last signal in each cluster
+            "max_conf" -> keep the signal with highest confidence (requires confidences)
+    
+    Returns:
+        np.ndarray: Boolean mask with declustered signals.
+    """
+    idx = np.where(signal_mask)[0]
+    keep = []
+    last_kept = -min_gap
+
+    for i in idx:
+        if i - last_kept >= min_gap:
+            if mode == "first":
+                keep.append(i)
+                last_kept = i
+            elif mode == "last":
+                # defer keeping until cluster ends
+                if keep and keep[-1] == last_kept:
+                    keep.pop()
+                keep.append(i)
+                last_kept = i
+            else:
+                raise ValueError("mode must be 'first' or 'last' for now")
+
+    mask = np.zeros_like(signal_mask, dtype=bool)
+    mask[keep] = True
+    return mask
+
+
 
 # --- Cluster filter ---        
 def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
@@ -112,76 +214,57 @@ if __name__ == "__main__":
         pred_test = model.predict(tr_data)
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
         
-        # --- Thresholds ---
-        buy_threshold = 0.9
-        buy_margin_threshold = 0.2
-        sell_threshold = 0.9
-        sell_margin_threshold = 0.2
-        
-        cluster_min_count = 2
-        cluster_window_days = 2
-        cluster_conf_ratio = 0.99
-        
-        # --- Moving Average (50-day) ---
         prices_np = aligned_prices.to_numpy().ravel()   # ensures 1D
 
-        # 50-day simple moving average (SMA) via convolution
-        ma50 = df["Close"].rolling(window=50, min_periods=1).mean()
-        ma10 = df["Close"].rolling(window=10, min_periods=1).mean()
-
-        n_preds = len(pred_test)
-        ma50_last = ma50.iloc[-n_preds:].to_numpy().ravel()
-        ma10_last = ma10.iloc[-n_preds:].to_numpy().ravel()
-        
-        # --- Confidence margins ---
-        top2_sorted = np.sort(pred_test, axis=1)[:, -2:]
-        margins = top2_sorted[:, 1] - top2_sorted[:, 0]
-        max_probs = np.max(pred_test, axis=1)
+        confidences = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
         
-        # --- Buy/Sell conditions with MA filter ---
-        buy_mask = (
-            (pred_classes == 1) &
-            (max_probs > buy_threshold) &
-            (margins > buy_margin_threshold) &
-            (prices_np < ma50_last) &
-            (ma10_last > ma50_last)# must be above MA50 for buy
+        # Buys
+        buy_raw = pred_classes == 1
+        
+        # require confidence >= 0.99
+        confidence_mask = confidences >= 0.99995
+        
+        # strict buy mask
+        buy_strict = buy_raw & confidence_mask
+        
+        minima_mask = strict_rolling_extrema(prices_np, lookback=5, mode="min")
+        trend_mask = ma_trend_filter(prices_np, short=5, long=20, mode="bull")
+        
+        score = (
+            buy_strict.astype(int) +
+            minima_mask.astype(int) +
+            trend_mask.astype(int)
         )
         
-        sell_mask = (
-            (pred_classes == 0) &
-            (max_probs > sell_threshold) &
-            (margins > sell_margin_threshold) &
-            (prices_np > ma50_last) &
-            (ma10_last < ma50_last)# must be above MA50 for buy
-        )
+        # Require at least 2 out of 3 conditions
+        buy_mask = score >= 2        
 
-
-        # --- Build DataFrame for filtering ---
-        df_preds = pd.DataFrame({
-            "date": aligned_prices.index,
-            "price": aligned_prices.values.ravel(),
-            "cls": pred_classes,
-            "confidence": max_probs
-        })
+        # Sells
+        sell_raw = pred_classes == 0
         
-        # --- Apply mask for confident predictions ---
-        df_confident = df_preds[buy_mask | sell_mask].copy()
+        # require confidence >= 0.99
+        confidence_mask = confidences >= 0.9999
         
-        df_clustered = filter_by_cluster_rule(
-            df_confident,
-            min_count=cluster_min_count,
-            window_days=cluster_window_days,
-            conf_ratio=cluster_conf_ratio
+        # strict buy mask
+        sell_strict = sell_raw & confidence_mask
+        
+        minima_mask = strict_rolling_extrema(prices_np, lookback=5, mode="max")
+        trend_mask = ma_trend_filter(prices_np, short=5, long=20, mode="bear")
+        
+        score = (
+            sell_strict.astype(int) +
+            minima_mask.astype(int) +
+            trend_mask.astype(int)
         )
         
+        # Require at least 2 out of 3 conditions
+        sell_mask = score >= 2        
+                
         # --- Separate final buy/sell indices ---
-        buy_pred_idxs = df_clustered.index[df_clustered["cls"] == 1]
-        sell_pred_idxs = df_clustered.index[df_clustered["cls"] == 0]
-        
-        buy_probs = df_clustered[df_clustered["cls"] == 1]["confidence"].values
-        sell_probs = df_clustered[df_clustered["cls"] == 0]["confidence"].values
-        
+        buy_pred_idxs = np.where(buy_mask)[0]
+        sell_pred_idxs = np.where(sell_mask)[0]
+
         # --- Plot predictions ---
         plt.figure(figsize=(14, 6))
         plt.plot(aligned_prices, label='Price')
@@ -189,31 +272,9 @@ if __name__ == "__main__":
         # Buy predictions
         plt.plot(aligned_prices.index[buy_pred_idxs], aligned_prices.iloc[buy_pred_idxs],
                  'bo', markersize=8, label='Predicted Buy', fillstyle='none')
-        for idx, prob in zip(buy_pred_idxs, buy_probs):
-            x = aligned_prices.index[idx]
-            y = aligned_prices.iloc[idx]
-            y_text = y + 0.03 * aligned_prices.max()
-            plt.plot([x, x], [y, y_text], 'b--', linewidth=0.5)
-            plt.text(x, y_text, f"{prob:.2f}", color='blue', fontsize=8, ha='center')
-        
-        # Sell predictions
         plt.plot(aligned_prices.index[sell_pred_idxs], aligned_prices.iloc[sell_pred_idxs],
-                 'ko', markersize=8, label='Predicted Sell', fillstyle='none')
-        for idx, prob in zip(sell_pred_idxs, sell_probs):
-            x = aligned_prices.index[idx]
-            y = aligned_prices.iloc[idx]
-            y_text = y - 0.03 * aligned_prices.max()
-            plt.plot([x, x], [y, y_text], 'k--', linewidth=0.5)
-            plt.text(x, y_text, f"{prob:.2f}", color='black', fontsize=8, ha='center')
-        '''
-        # Actual labels (for reference)
-        plt.plot(aligned_prices.index[buy_indices], aligned_prices.iloc[buy_indices],
-                 'g^', markersize=10, label='Buy')
-        plt.plot(aligned_prices.index[sell_indices], aligned_prices.iloc[sell_indices],
-                 'rv', markersize=10, label='Sell')
-        '''
-        plt.title(f"{ticker} — Cluster-Filtered Buy/Sell Predictions vs Actual")
-        plt.legend()
-        plt.tight_layout()
+                 'ro', markersize=8, label='Predicted Sell', fillstyle='none')
         plt.show()
+        
+
         
