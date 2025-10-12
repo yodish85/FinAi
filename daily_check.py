@@ -152,15 +152,14 @@ if __name__ == "__main__":
         buy_raw = pred_classes == 1
         
         # require confidence >= 0.99
-        confidence_mask = confidences >= 0.9995
+        confidence_mask = confidences >= 0.99995
         
         # strict buy mask
         buy_strict = buy_raw & confidence_mask
-        
         close_prices = df["Close"]
-        last_20 = close_prices.tail(20).to_numpy().ravel() 
-        minima_mask = model_validation.strict_rolling_extrema(last_20, lookback=5, mode="min")
-        trend_mask = model_validation.ma_trend_filter(last_20, short=5, long=20, mode="bull")
+        last_1000 = close_prices.tail(741).to_numpy().ravel() 
+        minima_mask = model_validation.strict_rolling_extrema(last_1000, lookback=5, mode="min")
+        trend_mask = model_validation.ma_trend_filter(last_1000, short=5, long=20, mode="bull")
         
         score = (
             buy_strict.astype(int) +
@@ -178,13 +177,13 @@ if __name__ == "__main__":
         sell_raw = pred_classes == 0
         
         # require confidence >= 0.99
-        confidence_mask = confidences >= 0.999
+        confidence_mask = confidences >= 0.9999
         
         # strict buy mask
         sell_strict = sell_raw & confidence_mask
         
-        maxima_mask = model_validation.strict_rolling_extrema(last_20, lookback=5, mode="max")
-        trend_mask = model_validation.ma_trend_filter(last_20, short=5, long=20, mode="bear")
+        maxima_mask = model_validation.strict_rolling_extrema(last_1000, lookback=5, mode="max")
+        trend_mask = model_validation.ma_trend_filter(last_1000, short=5, long=20, mode="bear")
         
         score = (
             sell_strict.astype(int) +
