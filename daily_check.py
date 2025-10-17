@@ -81,7 +81,7 @@ def plot_ticker_probs(tickers, probs, title, color, savepath=None):
 if __name__ == "__main__":
     
     data_path = "/Users/admin/FinAi/market_data"
-    days_to_process = 260 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
+    days_to_process = 270 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
     doBalance = False
 
     # Get all symbols
@@ -98,6 +98,7 @@ if __name__ == "__main__":
 
     # Load model
     model = load_model('/Users/admin/FinAi')
+    all_symbols = ["PRI", "TTD", "ALEX", "SNV", "MOS"]
 
     for i, ticker in enumerate(all_symbols, start=1):
         print(f"Processing {i}/{len(all_symbols)}: {ticker}")
@@ -133,10 +134,6 @@ if __name__ == "__main__":
         
         print(len(tr_labels), len(aligned_prices))
         print(aligned_prices.index[0], aligned_prices.index[-1])
-        
-        # Actual buy/sell signals from labels
-        buy_indices = np.where(tr_labels == 1)[0]
-        sell_indices = np.where(tr_labels == 0)[0]
 
         # --- Predict all at once (batch mode) ---
         pred_test = model.predict(tr_data) # should have size 1
@@ -162,16 +159,13 @@ if __name__ == "__main__":
         trend_mask = model_validation.ma_trend_filter(last_1000, short=5, long=20, mode="bull")
         
         score = (
-            buy_strict.astype(int) +
+            buy_strict.astype(int)[-1] +
             minima_mask.astype(int)[-1] +
             trend_mask.astype(int)[-1]
         )
         
         # Require at least 2 out of 3 conditions
         buy_mask = score >= 2        
-                
-        # --- Separate final buy/sell indices ---
-        buy_pred_idxs = np.where(buy_mask)[0]
 
         # Sells
         sell_raw = pred_classes == 0
@@ -186,7 +180,7 @@ if __name__ == "__main__":
         trend_mask = model_validation.ma_trend_filter(last_1000, short=5, long=20, mode="bear")
         
         score = (
-            sell_strict.astype(int) +
+            sell_strict.astype(int)[-1] +
             maxima_mask.astype(int)[-1] +
             trend_mask.astype(int)[-1]
         )
@@ -212,10 +206,24 @@ if __name__ == "__main__":
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
+    # Limit to first 30 tickers if the list is longer
+    max_tickers = 30
+    
     # Plot Buy predictions
-    plot_ticker_probs(buy_tickers_list, buy_probs_list, "Buy Predictions", color="green", savepath=f"predictions/buy_predictions_{timestamp}.png")
+    plot_ticker_probs(
+        buy_tickers_list[:max_tickers],
+        buy_probs_list[:max_tickers],
+        "Buy Predictions",
+        color="green",
+        savepath=f"predictions/buy_predictions_{timestamp}.png"
+    )
     
     # Plot Sell predictions
-    plot_ticker_probs(sell_tickers_list, sell_probs_list, "Sell Predictions", color="red", savepath=f"predictions/sell_predictions_{timestamp}.png")
-        
+    plot_ticker_probs(
+        sell_tickers_list[:max_tickers],
+        sell_probs_list[:max_tickers],
+        "Sell Predictions",
+        color="red",
+        savepath=f"predictions/sell_predictions_{timestamp}.png"
+    )
             

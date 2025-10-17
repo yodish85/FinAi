@@ -157,8 +157,9 @@ if __name__ == "__main__":
     # Load model
     model_path = "/Users/admin/FinAi"
     model = daily_check.load_model(model_path)
-    #tickers = ["FLO", "KDP", "SAP.DE", "DHL.DE", "BEI.DE"]
-    for ticker in tickers[50:150]:
+    tickers = ["PRI", "KMPR", "BTU", "HCC", "ARW", "LPG"]
+    #tickers = [ "CORT"]
+    for ticker in tickers:
         print(f"\n--- Training model for {ticker} ---\n")
 
         # Fetch latest data
@@ -166,7 +167,7 @@ if __name__ == "__main__":
         fetcher = StockFetcher(base_path=data_path)
         fetcher.fetch_and_save([ticker], data_path)
 
-        days_to_process = 1000
+        days_to_process = 1001
         doBalance = False
 
         result = extract_features_with_fft.extract_features_with_fft(
@@ -196,20 +197,6 @@ if __name__ == "__main__":
         print(len(tr_labels), len(aligned_prices))
         print(aligned_prices.index[0], aligned_prices.index[-1])
 
-        # Actual buy/sell signals from labels
-        buy_indices = np.where(tr_labels == 1)[0]
-        sell_indices = np.where(tr_labels == 0)[0]
-        '''
-        # Plot actual buy/sell
-        plt.figure(figsize=(14, 6))
-        plt.plot(aligned_prices, label='Price')
-        plt.plot(aligned_prices.index[buy_indices], aligned_prices.iloc[buy_indices], 'g^', markersize=10, label='Buy')
-        plt.plot(aligned_prices.index[sell_indices], aligned_prices.iloc[sell_indices], 'rv', markersize=10, label='Sell')
-        plt.title(f"{ticker} — Filtered Buy/Sell Points with Gain Threshold & Holding Period")
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
-        '''
         # --- Predict all at once (batch mode) ---
         pred_test = model.predict(tr_data)
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
@@ -249,12 +236,12 @@ if __name__ == "__main__":
         # strict buy mask
         sell_strict = sell_raw & confidence_mask
         
-        minima_mask = strict_rolling_extrema(prices_np, lookback=5, mode="max")
+        maxima_mask = strict_rolling_extrema(prices_np, lookback=5, mode="max")
         trend_mask = ma_trend_filter(prices_np, short=5, long=20, mode="bear")
         
         score = (
             sell_strict.astype(int) +
-            minima_mask.astype(int) +
+            maxima_mask.astype(int) +
             trend_mask.astype(int)
         )
         
