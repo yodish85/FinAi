@@ -98,7 +98,7 @@ if __name__ == "__main__":
 
     # Load model
     model = load_model('/Users/admin/FinAi')
-    all_symbols = ["PRI", "TTD", "ALEX", "SNV", "MOS"]
+    #all_symbols = ["PRI", "TTD", "ALEX", "SNV", "MOS"]
 
     for i, ticker in enumerate(all_symbols, start=1):
         print(f"Processing {i}/{len(all_symbols)}: {ticker}")
@@ -149,12 +149,12 @@ if __name__ == "__main__":
         buy_raw = pred_classes == 1
         
         # require confidence >= 0.99
-        confidence_mask = confidences >= 0.99995
+        confidence_mask = confidences >= 0.999
         
         # strict buy mask
         buy_strict = buy_raw & confidence_mask
         close_prices = df["Close"]
-        last_1000 = close_prices.tail(741).to_numpy().ravel() 
+        last_1000 = close_prices.tail(1001).to_numpy().ravel() 
         minima_mask = model_validation.strict_rolling_extrema(last_1000, lookback=5, mode="min")
         trend_mask = model_validation.ma_trend_filter(last_1000, short=5, long=20, mode="bull")
         
@@ -171,7 +171,7 @@ if __name__ == "__main__":
         sell_raw = pred_classes == 0
         
         # require confidence >= 0.99
-        confidence_mask = confidences >= 0.9999
+        confidence_mask = confidences >= 0.999
         
         # strict buy mask
         sell_strict = sell_raw & confidence_mask
@@ -196,11 +196,13 @@ if __name__ == "__main__":
             best_idx = sell_pred_idxs
             sell_probs_list.append(confidences)
             sell_tickers_list.append(ticker)
+            sell_pred_idxs = []
         
         if buy_pred_idxs.size > 0:
             best_idx = buy_pred_idxs
             buy_probs_list.append(confidences)
             buy_tickers_list.append(ticker)
+            buy_pred_idxs = []
 
     
     # Generate timestamp

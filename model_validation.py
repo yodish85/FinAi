@@ -40,14 +40,14 @@ def strict_rolling_extrema(prices, lookback=5, threshold=0.01, mode="min"):
         np.ndarray: Boolean mask of extrema.
     """
     s = pd.Series(prices)
-    rolling_mean = s.rolling(lookback, center=True, min_periods=1).mean()
+    rolling_mean = s.rolling(lookback, center=False, min_periods=1).mean()
 
     if mode == "min":  # Buy condition
-        rolling_ext = s.rolling(lookback, center=True, min_periods=1).min()
+        rolling_ext = s.rolling(lookback, center=False, min_periods=1).min()
         mask = (s == rolling_ext) & (s < (rolling_mean * (1 - threshold)))
 
     elif mode == "max":  # Sell condition
-        rolling_ext = s.rolling(lookback, center=True, min_periods=1).max()
+        rolling_ext = s.rolling(lookback, center=False, min_periods=1).max()
         mask = (s == rolling_ext) & (s > (rolling_mean * (1 + threshold)))
 
     else:
@@ -157,7 +157,7 @@ if __name__ == "__main__":
     # Load model
     model_path = "/Users/admin/FinAi"
     model = daily_check.load_model(model_path)
-    tickers = ["PRI", "KMPR", "BTU", "HCC", "ARW", "LPG"]
+    tickers = ["CAT", "LUMN", "RBA", "PRLB", "USPH", "CLF"]
     #tickers = [ "CORT"]
     for ticker in tickers:
         print(f"\n--- Training model for {ticker} ---\n")
@@ -210,7 +210,7 @@ if __name__ == "__main__":
         buy_raw = pred_classes == 1
         
         # require confidence >= 0.99
-        confidence_mask = confidences >= 0.99995
+        confidence_mask = confidences >= 0.9
         
         # strict buy mask
         buy_strict = buy_raw & confidence_mask
@@ -231,7 +231,7 @@ if __name__ == "__main__":
         sell_raw = pred_classes == 0
         
         # require confidence >= 0.99
-        confidence_mask = confidences >= 0.9999
+        confidence_mask = confidences >= 0.9
         
         # strict buy mask
         sell_strict = sell_raw & confidence_mask
