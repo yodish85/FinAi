@@ -113,78 +113,82 @@ def filter_sp500_tickers(tickers):
     return [t for t in tickers if t in sp500]
 
 def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
-                                   smooth_alpha=0.0):
+                                   smooth_window=2, window_offset=0):
     """
     Directional signals using smoothed confidences (no future info).
-
     BUY if class2 is a local peak AND (class1 AND class0) is a local trough.
     SELL if class1 is a local peak AND (class2 AND class0) is a local trough.
-
+    
     Args:
         pred_test: ndarray (n, n_classes) with at least 3 classes (0,1,2).
         trend_window: lookback window for peak/trough check.
         conf_th: minimum confidence required for signal.
-        smooth_alpha: smoothing factor (0 = no smoothing, 1 = heavy smoothing).
-
+        window_offset: exclude last n elements from window (default 1).
+                      offset=1 means compare current value to window ending 1 step back.
+    
     Returns:
         dict with buy_mask, sell_mask, indices, strengths, and details.
     """
     pred_test = np.asarray(pred_test)
     if pred_test.ndim != 2 or pred_test.shape[1] < 3:
         raise ValueError("pred_test must be shape (n, ≥3 classes)")
-
+    
     n = pred_test.shape[0]
     c0, c1, c2 = pred_test[:, 0], pred_test[:, 1], pred_test[:, 2]
-
-    def smooth_ema(arr, alpha):
-        """Exponential moving average (no future info)."""
-        if alpha <= 0:
-            return arr
-        smoothed = np.zeros_like(arr)
-        smoothed[0] = arr[0]
-        for i in range(1, len(arr)):
-            smoothed[i] = alpha * arr[i] + (1 - alpha) * smoothed[i - 1]
-        return smoothed
-
-    # Smooth confidences (no lookahead)
-    c0 = smooth_ema(c0, smooth_alpha)
-    c1 = smooth_ema(c1, smooth_alpha)
-    c2 = smooth_ema(c2, smooth_alpha)
-
+    
+    c0 = pd.DataFrame(c0).rolling(smooth_window, min_periods=1).mean().to_numpy()
+    c1 = pd.DataFrame(c1).rolling(smooth_window, min_periods=1).mean().to_numpy()
+    c2 = pd.DataFrame(c2).rolling(smooth_window, min_periods=1).mean().to_numpy()
+    
     buy_mask = np.zeros(n, dtype=bool)
     sell_mask = np.zeros(n, dtype=bool)
     buy_strength = np.zeros(n)
     sell_strength = np.zeros(n)
-
+    
     trend_window = max(1, int(trend_window))
     conf_th = float(conf_th)
-
+    window_offset = max(1, int(window_offset))
+    
     for t in range(n):
-        start = max(0, t - trend_window + 1)
-        c0_win = c0[start:t + 1]
-        c1_win = c1[start:t + 1]
-        c2_win = c2[start:t + 1]
-
+        # Need enough history for offset window
+        if t < window_offset:
+            continue
+            
+        # Window ends at (t - window_offset), goes back trend_window steps
+        end = t - window_offset + 1  # +1 because slicing is exclusive at end
+        start = max(0, end - trend_window)
+        
+        c0_win = c0[start:end]
+        c1_win = c1[start:end]
+        c2_win = c2[start:end]
+        
+        # Current values at time t
         c0_t, c1_t, c2_t = c0[t], c1[t], c2[t]
+        
         if (c1_t < conf_th) and (c2_t < conf_th):
             continue
-
+        
+        # Check if window has data
+        if len(c0_win) == 0:
+            continue
+        
+        # Peak/trough: compare current value to offset window
         c0_is_trough = c0_t <= np.min(c0_win)
         c1_is_peak = c1_t >= np.max(c1_win)
         c1_is_trough = c1_t <= np.min(c1_win)
         c2_is_peak = c2_t >= np.max(c2_win)
         c2_is_trough = c2_t <= np.min(c2_win)
-
-        # BUY: class2 peak and (class1 or class0 trough)
-        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th:
+        
+        # BUY: class2 peak and (class1 AND class0 trough)
+        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th :
             buy_mask[t] = True
             buy_strength[t] = c2_t - np.min(c2_win)
-
-        # SELL: class1 peak and (class2 or class0 trough)
-        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th:
+        
+        # SELL: class1 peak and (class2 AND class0 trough)
+        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th :
             sell_mask[t] = True
             sell_strength[t] = c1_t - np.min(c1_win)
-
+    
     return {
         "buy_mask": buy_mask,
         "sell_mask": sell_mask,
@@ -195,11 +199,12 @@ def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
         "details": {
             "trend_window": trend_window,
             "conf_th": conf_th,
-            "smooth_alpha": smooth_alpha,
+            "window_offset": window_offset,
             "buy_class": 2,
             "sell_class": 1,
         },
     }
+
 
 
 def find_high_confidence_clusters(confidences, pred_classes, target_class, 
@@ -577,7 +582,7 @@ if __name__ == "__main__":
     # Load model
     model_path = "/Users/admin/FinAi"
     model = daily_check.load_model(model_path)
-    #tickers = ["ROP", "CMCSA", "NVDA", "VRSN"]
+    #tickers = ["GILD", "CMCSA", "NVDA", "VRSN"]
     
     # Portfolio tracking
     initial_capital = 10000
@@ -681,7 +686,7 @@ if __name__ == "__main__":
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = directional_confidence_signals(
             pred_test,
-            trend_window=3,
+            trend_window=40,
             conf_th=0.75,
         )
 
