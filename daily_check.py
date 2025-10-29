@@ -19,8 +19,8 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import yfinance as yf
 import pandas as pd
-import model_validation
-importlib.reload(model_validation)
+import comprehensive_validation
+importlib.reload(comprehensive_validation)
 
 def load_model(path):
     # Search for the latest .keras or .h5 model file
@@ -81,7 +81,8 @@ def plot_ticker_probs(tickers, probs, title, color, savepath=None):
 if __name__ == "__main__":
     
     data_path = "/Users/admin/FinAi/market_data"
-    days_to_process = 270 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
+    days_to_process = 1001 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
+    # use 1001; it complies with the validation and gives best results
     doBalance = False
 
     # Get all symbols
@@ -89,7 +90,9 @@ if __name__ == "__main__":
     files = os.listdir(directory)
     # Get tickers from training
     all_symbols = training_model.get_symbols_from_folder(directory)
-        
+    
+    all_symbols = comprehensive_validation.filter_sp500_tickers(all_symbols)
+    
     # --- Initialize before the loop ---
     sell_probs_list = []
     sell_tickers_list = []
@@ -98,7 +101,7 @@ if __name__ == "__main__":
 
     # Load model
     model = load_model('/Users/admin/FinAi')
-    #all_symbols = ["PRI", "TTD", "ALEX", "SNV", "MOS"]
+    #all_symbols = ["STX", "TTD", "ALEX", "SNV", "MOS"]
 
     for i, ticker in enumerate(all_symbols, start=1):
         print(f"Processing {i}/{len(all_symbols)}: {ticker}")
@@ -145,64 +148,36 @@ if __name__ == "__main__":
         confidences = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
         
-        # Buys
-        buy_raw = pred_classes == 1
-        
-        # require confidence >= 0.99
-        confidence_mask = confidences >= 0.999
-        
-        # strict buy mask
-        buy_strict = buy_raw & confidence_mask
-        close_prices = df["Close"]
-        last_1000 = close_prices.tail(1001).to_numpy().ravel() 
-        minima_mask = model_validation.strict_rolling_extrema(last_1000, lookback=5, mode="min")
-        trend_mask = model_validation.ma_trend_filter(last_1000, short=5, long=20, mode="bull")
-        
-        score = (
-            buy_strict.astype(int)[-1] +
-            minima_mask.astype(int)[-1] +
-            trend_mask.astype(int)[-1]
+        # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
+        res = comprehensive_validation.directional_confidence_signals(
+            pred_test,
+            pred_classes=pred_classes,
+            momentum_weight=1,  # Weight recent changes more
+            decluster_gap=10      # Keep 10 bars between signals
         )
         
-        # Require at least 2 out of 3 conditions
-        buy_mask = score >= 2        
-
-        # Sells
-        sell_raw = pred_classes == 0
+        # Inspect indices
+        print("Buy points idx:", res['buy_idx'])
+        print("Sell points idx:", res['sell_idx'])
         
-        # require confidence >= 0.99
-        confidence_mask = confidences >= 0.999
+        buy_mask = res["buy_mask"]
+        sell_mask = res["sell_mask"]
         
-        # strict buy mask
-        sell_strict = sell_raw & confidence_mask
+        # Only populate if the LAST element is True
+        buy_pred_idxs = np.where(buy_mask)[0] if buy_mask[-1] else np.array([])
+        sell_pred_idxs = np.where(sell_mask)[0] if sell_mask[-1] else np.array([])
         
-        maxima_mask = model_validation.strict_rolling_extrema(last_1000, lookback=5, mode="max")
-        trend_mask = model_validation.ma_trend_filter(last_1000, short=5, long=20, mode="bear")
-        
-        score = (
-            sell_strict.astype(int)[-1] +
-            maxima_mask.astype(int)[-1] +
-            trend_mask.astype(int)[-1]
-        )
-        
-        # Require at least 2 out of 3 conditions
-        sell_mask = score >= 2        
-                
-        # --- Separate final buy/sell indices ---
-        buy_pred_idxs = np.where(buy_mask)[0]
-        sell_pred_idxs = np.where(sell_mask)[0]
-
+        # Retain only the last sell signal
         if sell_pred_idxs.size > 0:
-            best_idx = sell_pred_idxs
-            sell_probs_list.append(confidences)
+            best_idx = sell_pred_idxs[-1]
+            sell_probs_list.append(confidences[best_idx])
             sell_tickers_list.append(ticker)
-            sell_pred_idxs = []
         
+        # Retain only the last buy signal
         if buy_pred_idxs.size > 0:
-            best_idx = buy_pred_idxs
-            buy_probs_list.append(confidences)
+            best_idx = buy_pred_idxs[-1]
+            buy_probs_list.append(confidences[best_idx])
             buy_tickers_list.append(ticker)
-            buy_pred_idxs = []
 
     
     # Generate timestamp

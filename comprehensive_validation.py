@@ -32,6 +32,226 @@ import pandas as pd
 
 import warnings
 
+import time
+import requests
+from pathlib import Path
+
+CACHE_PATH = Path.home() / ".cache" / "sp500_tickers.csv"
+CACHE_TTL = 24 * 3600  # seconds — refresh once per day
+
+def add_relaxed_trend_filter(prices, signal_mask, signal_type='buy', 
+                             short_ma=20, long_ma=50):
+    """Relaxed: just check MA crossover, no slope requirement."""
+    s = pd.Series(prices)
+    ma_short = s.rolling(short_ma, min_periods=1).mean()
+    ma_long = s.rolling(long_ma, min_periods=1).mean()
+    
+    if signal_type == 'buy':
+        trend_ok = ma_short > ma_long
+    else:  # sell
+        trend_ok = ma_short < ma_long
+    
+    return signal_mask & trend_ok.fillna(False).to_numpy()
+
+def require_price_below_ma(prices, signal_mask, ma_period=200):
+    """Only buy when price is above long-term MA (bull market filter)."""
+    s = pd.Series(prices)
+    ma_long = s.rolling(ma_period, min_periods=1).mean()
+    above_ma = s < ma_long
+    return signal_mask & above_ma.fillna(False).to_numpy()
+
+def fetch_sp500_from_wikipedia():
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+    }
+    r = requests.get(url, headers=headers, timeout=15)
+    r.raise_for_status()
+    df = pd.read_html(r.text, displayed_only=False)[0]
+    symbols = [s.replace('.', '-') for s in df['Symbol'].astype(str).tolist()]
+    return symbols
+
+def read_sp500_from_cache():
+    if not CACHE_PATH.exists():
+        return None
+    mtime = CACHE_PATH.stat().st_mtime
+    if time.time() - mtime > CACHE_TTL:
+        return None
+    df = pd.read_csv(CACHE_PATH)
+    return df['symbol'].astype(str).tolist()
+
+def write_sp500_cache(symbols):
+    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"symbol": symbols}).to_csv(CACHE_PATH, index=False)
+
+def get_sp500_tickers():
+    # 1) try cache
+    symbols = read_sp500_from_cache()
+    if symbols:
+        return symbols
+
+    # 2) try wikipedia (with headers)
+    try:
+        symbols = fetch_sp500_from_wikipedia()
+        write_sp500_cache(symbols)
+        return symbols
+    except Exception as e:
+        # log but continue to fallback
+        print(f"Warning: failed to fetch S&P 500 from Wikipedia: {e}")
+
+    # 3) last-resort fallback: if you want, load a local static file shipped with your repo
+    local = Path("data/sp500_static.csv")
+    if local.exists():
+        df = pd.read_csv(local)
+        return [s.replace('.', '-') for s in df['symbol'].astype(str).tolist()]
+
+    raise RuntimeError("Could not obtain S&P 500 tickers (no cache, wikipedia fetch failed, no local fallback).")
+
+def filter_sp500_tickers(tickers):
+    sp500 = set(get_sp500_tickers())
+    return [t for t in tickers if t in sp500]
+
+def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
+                                   smooth_alpha=0.0):
+    """
+    Directional signals using smoothed confidences (no future info).
+
+    BUY if class2 is a local peak AND (class1 AND class0) is a local trough.
+    SELL if class1 is a local peak AND (class2 AND class0) is a local trough.
+
+    Args:
+        pred_test: ndarray (n, n_classes) with at least 3 classes (0,1,2).
+        trend_window: lookback window for peak/trough check.
+        conf_th: minimum confidence required for signal.
+        smooth_alpha: smoothing factor (0 = no smoothing, 1 = heavy smoothing).
+
+    Returns:
+        dict with buy_mask, sell_mask, indices, strengths, and details.
+    """
+    pred_test = np.asarray(pred_test)
+    if pred_test.ndim != 2 or pred_test.shape[1] < 3:
+        raise ValueError("pred_test must be shape (n, ≥3 classes)")
+
+    n = pred_test.shape[0]
+    c0, c1, c2 = pred_test[:, 0], pred_test[:, 1], pred_test[:, 2]
+
+    def smooth_ema(arr, alpha):
+        """Exponential moving average (no future info)."""
+        if alpha <= 0:
+            return arr
+        smoothed = np.zeros_like(arr)
+        smoothed[0] = arr[0]
+        for i in range(1, len(arr)):
+            smoothed[i] = alpha * arr[i] + (1 - alpha) * smoothed[i - 1]
+        return smoothed
+
+    # Smooth confidences (no lookahead)
+    c0 = smooth_ema(c0, smooth_alpha)
+    c1 = smooth_ema(c1, smooth_alpha)
+    c2 = smooth_ema(c2, smooth_alpha)
+
+    buy_mask = np.zeros(n, dtype=bool)
+    sell_mask = np.zeros(n, dtype=bool)
+    buy_strength = np.zeros(n)
+    sell_strength = np.zeros(n)
+
+    trend_window = max(1, int(trend_window))
+    conf_th = float(conf_th)
+
+    for t in range(n):
+        start = max(0, t - trend_window + 1)
+        c0_win = c0[start:t + 1]
+        c1_win = c1[start:t + 1]
+        c2_win = c2[start:t + 1]
+
+        c0_t, c1_t, c2_t = c0[t], c1[t], c2[t]
+        if (c1_t < conf_th) and (c2_t < conf_th):
+            continue
+
+        c0_is_trough = c0_t <= np.min(c0_win)
+        c1_is_peak = c1_t >= np.max(c1_win)
+        c1_is_trough = c1_t <= np.min(c1_win)
+        c2_is_peak = c2_t >= np.max(c2_win)
+        c2_is_trough = c2_t <= np.min(c2_win)
+
+        # BUY: class2 peak and (class1 or class0 trough)
+        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th:
+            buy_mask[t] = True
+            buy_strength[t] = c2_t - np.min(c2_win)
+
+        # SELL: class1 peak and (class2 or class0 trough)
+        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th:
+            sell_mask[t] = True
+            sell_strength[t] = c1_t - np.min(c1_win)
+
+    return {
+        "buy_mask": buy_mask,
+        "sell_mask": sell_mask,
+        "buy_idx": np.where(buy_mask)[0],
+        "sell_idx": np.where(sell_mask)[0],
+        "buy_strength": buy_strength,
+        "sell_strength": sell_strength,
+        "details": {
+            "trend_window": trend_window,
+            "conf_th": conf_th,
+            "smooth_alpha": smooth_alpha,
+            "buy_class": 2,
+            "sell_class": 1,
+        },
+    }
+
+
+def find_high_confidence_clusters(confidences, pred_classes, target_class, 
+                                   conf_threshold=0.95, min_cluster_size=5, 
+                                   last_n_growing=5, proximity_pct=0.90):
+    """
+    Find clusters of high confidence predictions for a given class.
+    
+    Args:
+        confidences (np.ndarray): Confidence values for all predictions
+        pred_classes (np.ndarray): Predicted class labels (0 or 1)
+        target_class (int): Class to look for (0=sell, 1=buy)
+        conf_threshold (float): Minimum confidence threshold (default 0.95)
+        min_cluster_size (int): Minimum number of elements in a cluster (default 5)
+        last_n_growing (int): Number of last elements that must show growing confidence (default 5)
+        proximity_pct (float): Last element must be within this % of current position (default 0.90)
+    
+    Returns:
+        np.ndarray: Boolean mask indicating valid signal positions
+    """
+    n = len(confidences)
+    signal_mask = np.zeros(n, dtype=bool)
+    
+    # Process each position i
+    for i in range(n):
+        # Look back from position i
+        window_start = max(0, int(i * (1 - proximity_pct)))
+        
+        # Find high confidence predictions of target class in the lookback window
+        candidates = []
+        for j in range(window_start, i):
+            if pred_classes[j] == target_class and confidences[j] >= conf_threshold:
+                candidates.append(j)
+        
+        # Check if we have at least min_cluster_size candidates
+        if len(candidates) < min_cluster_size:
+            continue
+        
+        # Take the last min_cluster_size candidates to form the cluster
+        cluster_indices = candidates[-min_cluster_size:]
+        cluster_confidences = confidences[cluster_indices]
+        
+        # Check if last last_n_growing elements show growing confidence
+        if len(cluster_indices) >= last_n_growing:
+            last_n_conf = cluster_confidences[-last_n_growing:]
+            # Check if confidences are strictly increasing (or non-decreasing)
+            if np.all(np.diff(last_n_conf) >= 0):  # Use > 0 for strictly increasing
+                signal_mask[i] = True
+    
+    return signal_mask
+
+
 def ma_trend_check(prices, short=10, long=200, mode="bull"):
     """
     Simple moving-average trend check (safe for live trading).
@@ -76,9 +296,9 @@ def ma_trend_check(prices, short=10, long=200, mode="bull"):
 
     # Compare MAs
     if mode == "bull":
-        mask = ma_short < ma_long # INVERTED LOGIC OTHERWISE IS TOO LATE
+        mask = ma_short > ma_long # INVERTED LOGIC OTHERWISE IS TOO LATE
     elif mode == "bear":
-        mask = ma_short > ma_long
+        mask = ma_short < ma_long
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -114,43 +334,6 @@ def strict_rolling_extrema(prices, lookback=5, threshold=0.00, mode="min"):
 
     return mask.fillna(False).to_numpy()
 
-
-def decluster_signals(signal_mask, min_gap=10, mode="first"):
-    """
-    Decluster signals by enforcing a minimum gap between them.
-    
-    Args:
-        signal_mask (np.ndarray): Boolean mask of signals.
-        min_gap (int): Minimum number of bars between signals.
-        mode (str): 
-            "first" -> keep the first signal in each cluster
-            "last"  -> keep the last signal in each cluster
-            "max_conf" -> keep the signal with highest confidence (requires confidences)
-    
-    Returns:
-        np.ndarray: Boolean mask with declustered signals.
-    """
-    idx = np.where(signal_mask)[0]
-    keep = []
-    last_kept = -min_gap
-
-    for i in idx:
-        if i - last_kept >= min_gap:
-            if mode == "first":
-                keep.append(i)
-                last_kept = i
-            elif mode == "last":
-                # defer keeping until cluster ends
-                if keep and keep[-1] == last_kept:
-                    keep.pop()
-                keep.append(i)
-                last_kept = i
-            else:
-                raise ValueError("mode must be 'first' or 'last' for now")
-
-    mask = np.zeros_like(signal_mask, dtype=bool)
-    mask[keep] = True
-    return mask
 
 def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
     keep_indices = []
@@ -217,7 +400,7 @@ class TradeSimulator:
     
     def check_exit(self, idx, price, dates):
         """
-        Check if position should be closed (5 days or 10% gain).
+        Check if position should be closed (5 days, 10% gain, or 5% loss).
         
         Args:
             idx (int): Current index
@@ -240,10 +423,15 @@ class TradeSimulator:
         else:  # short
             pct_change = (entry_price - price) / entry_price
         
-        # Exit conditions: 5 days OR 10% gain
-        should_exit = (self.open_position['days_held'] >= 5) or (pct_change >= 0.10)
+        # Exit conditions: 5 days OR 10% gain OR 5% loss
+        should_exit = (
+            (self.open_position['days_held'] >= 5) or 
+            (pct_change >= 0.10) or 
+            (pct_change <= -0.05)
+        )
         
         if should_exit:
+            # Calculate new capital based on the actual pct_change
             exit_value = self.capital * (1 + pct_change)
             profit = exit_value - self.capital
             
@@ -257,7 +445,8 @@ class TradeSimulator:
                 'days_held': self.open_position['days_held'],
                 'pct_return': pct_change * 100,
                 'profit': profit,
-                'capital_after': exit_value
+                'capital_after': exit_value,
+                'exit_reason': self._get_exit_reason(self.open_position['days_held'], pct_change)
             }
             
             self.trades.append(trade_record)
@@ -266,6 +455,16 @@ class TradeSimulator:
             return True
         
         return False
+
+    def _get_exit_reason(self, days_held, pct_change):
+        """Helper to identify why trade was exited."""
+        if pct_change >= 0.10:
+            return 'take_profit'
+        elif pct_change <= -0.05:
+            return 'stop_loss'
+        elif days_held >= 5:
+            return 'time_limit'
+        return 'unknown'
     
     def close_final_position(self, price, date):
         """Force close any remaining open position at end of data."""
@@ -373,16 +572,18 @@ if __name__ == "__main__":
     data_path = "/Users/admin/FinAi/market_data/"
     tickers = get_symbols_from_folder(data_path)
     
+    tickers = filter_sp500_tickers(tickers)
+        
     # Load model
     model_path = "/Users/admin/FinAi"
     model = daily_check.load_model(model_path)
-    tickers = ["RMS.PA", "LUMN", "RBA", "PRLB", "USPH", "CLF"]
+    #tickers = ["ROP", "CMCSA", "NVDA", "VRSN"]
     
     # Portfolio tracking
     initial_capital = 10000
     portfolio_results = {}
     
-    for ticker in tickers[0:100]:
+    for ticker in tickers[0:10]:
         print(f"\n{'='*60}")
         print(f"Processing {ticker}")
         print(f"{'='*60}\n")
@@ -430,28 +631,68 @@ if __name__ == "__main__":
         confidences = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
         
-        # Buys
-        trend_bull = ma_trend_check(prices_np, short=100, long=200, mode="bull")  # buy zones
-        trend_bear = ma_trend_check(prices_np, short=100, long=200, mode="bear")  # sell zones
+        doConfidencePlot = False
+        if doConfidencePlot:
+            # Assuming you already have: prices_np, pred_test (shape: [n, n_classes]), pred_classes
+            x = np.arange(len(prices_np))
+            n_classes = pred_test.shape[1]
+            
+            # --- Smooth confidences ---
+            window = 2  # adjust for smoother / more responsive
+            smoothed_conf = pd.DataFrame(pred_test).rolling(window, min_periods=1).mean().to_numpy()
+            
+            # --- Plot ---
+            fig, ax1 = plt.subplots(figsize=(14, 6))
+            
+            # Price line
+            ax1.plot(x, prices_np, color='black', linewidth=1.5, label='Price')
+            ax1.set_xlabel("Time")
+            ax1.set_ylabel("Price", color='black')
+            ax1.tick_params(axis='y', labelcolor='black')
+            
+            # Secondary axis for confidences
+            ax2 = ax1.twinx()
+            colors = ['tab:blue', 'tab:orange', 'tab:green']
+            
+            for i in range(n_classes):
+                ax2.plot(
+                    x, smoothed_conf[:, i],
+                    color=colors[i % len(colors)],
+                    label=f"Class {i} smoothed conf (w={window})",
+                    alpha=0.8
+                )
+            
+            ax2.set_ylabel("Smoothed Confidence", color='tab:blue')
+            ax2.tick_params(axis='y', labelcolor='tab:blue')
+            ax2.set_ylim(0, 1.0)
+            
+            # Optional scatter for buy/sell classes
+            buy_idx = np.where(pred_classes == 2)[0]
+            sell_idx = np.where(pred_classes == 1)[0]
+            ax1.scatter(buy_idx, prices_np[buy_idx], color='green', label='BUY (class 2)', s=30, marker='^')
+            ax1.scatter(sell_idx, prices_np[sell_idx], color='red', label='SELL (class 1)', s=30, marker='v')
+            
+            # Combined legend
+            fig.legend(loc='upper left', bbox_to_anchor=(0.1, 0.9))
+            plt.title(f"Price vs Smoothed Class Confidences ({n_classes} classes, window={window})")
+            plt.tight_layout()
+            plt.show()
 
-        buy_raw = pred_classes == 1
-        confidence_mask = confidences >= 0.99
-        buy_strict = buy_raw & confidence_mask
-        minima_mask = strict_rolling_extrema(prices_np, lookback=10, mode="min")
-        score = (trend_bull.astype(int) + minima_mask.astype(int))
-        buy_mask = (score >= 2) & buy_strict
+        # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
+        res = directional_confidence_signals(
+            pred_test,
+            trend_window=3,
+            conf_th=0.75,
+        )
 
-        # Sells
-        sell_raw = pred_classes == 0
-        confidence_mask = confidences >= 0.99
-        sell_strict = sell_raw & confidence_mask
-        maxima_mask = strict_rolling_extrema(prices_np, lookback=10, mode="max")
-        score = (trend_bear.astype(int) + maxima_mask.astype(int))
-        sell_mask = (score >= 2) & sell_strict
-        
+        # Apply price filters
+        buy_mask = res['buy_mask'].copy()
+        sell_mask = res['sell_mask'].copy()
+
+        # 4. Use filtered masks
         buy_pred_idxs = np.where(buy_mask)[0]
         sell_pred_idxs = np.where(sell_mask)[0]
-
+        
         # --- SIMULATE TRADES ---
         simulator = TradeSimulator(initial_capital=initial_capital)
         
@@ -489,8 +730,8 @@ if __name__ == "__main__":
         if summary['total_trades'] > 0:
             print(f"\n📋 Trade Details:")
             print(trades_df[['entry_date', 'exit_date', 'type', 'entry_price', 
-                            'exit_price', 'pct_return', 'capital_after']].to_string())
-
+                            'exit_price', 'pct_return', 'days_held', 'exit_reason', 
+                            'capital_after']].to_string())
         # Plot
         plt.figure(figsize=(14, 8))
         
@@ -555,7 +796,6 @@ if __name__ == "__main__":
         plt.tight_layout()
         plt.show()
     
-    # Portfolio summary
     # Portfolio summary
     print(f"\n{'='*60}")
     print("PORTFOLIO SUMMARY")
