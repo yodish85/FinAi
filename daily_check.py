@@ -103,7 +103,19 @@ if __name__ == "__main__":
     model = load_model('/Users/admin/FinAi')
     #all_symbols = ["STX", "TTD", "ALEX", "SNV", "MOS"]
 
+    ticker_gains_map = np.load('/Users/admin/FinAi/ticker_gains_map.npy', allow_pickle=True).item()
+    
     for i, ticker in enumerate(all_symbols, start=1):
+        
+        # Skip if ticker not in map
+        if ticker not in ticker_gains_map:
+            print(f"Skipping {ticker} - not in gains map")
+            continue
+        
+        # Skip if gains are ≤20%
+        if not ticker_gains_map[ticker]:
+            continue
+            
         print(f"Processing {i}/{len(all_symbols)}: {ticker}")
         
         # Fetch latest data
@@ -151,9 +163,8 @@ if __name__ == "__main__":
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = comprehensive_validation.directional_confidence_signals(
             pred_test,
-            pred_classes=pred_classes,
-            momentum_weight=1,  # Weight recent changes more
-            decluster_gap=10      # Keep 10 bars between signals
+            trend_window=3,
+            conf_th=0.8,
         )
         
         # Inspect indices

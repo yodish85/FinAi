@@ -432,7 +432,7 @@ class TradeSimulator:
         should_exit = (
             (self.open_position['days_held'] >= 5) or 
             (pct_change >= 0.10) or 
-            (pct_change <= -0.05)
+            (pct_change <= -0.025)
         )
         
         if should_exit:
@@ -588,7 +588,13 @@ if __name__ == "__main__":
     initial_capital = 10000
     portfolio_results = {}
     
-    for ticker in tickers[0:10]:
+    ticker_gains_map = np.load('/Users/admin/FinAi/ticker_gains_map.npy', allow_pickle=True).item()
+    
+    for ticker in tickers:
+        
+        if not ticker_gains_map[ticker]:
+            continue
+        
         print(f"\n{'='*60}")
         print(f"Processing {ticker}")
         print(f"{'='*60}\n")
@@ -686,8 +692,8 @@ if __name__ == "__main__":
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = directional_confidence_signals(
             pred_test,
-            trend_window=40,
-            conf_th=0.75,
+            trend_window=3,
+            conf_th=0.8,
         )
 
         # Apply price filters
@@ -737,69 +743,73 @@ if __name__ == "__main__":
             print(trades_df[['entry_date', 'exit_date', 'type', 'entry_price', 
                             'exit_price', 'pct_return', 'days_held', 'exit_reason', 
                             'capital_after']].to_string())
-        # Plot
-        plt.figure(figsize=(14, 8))
         
-        # Price chart
-        plt.subplot(2, 1, 1)
-        plt.plot(aligned_prices, label='Price', linewidth=1.5)
-        plt.plot(aligned_prices.index[buy_pred_idxs], aligned_prices.iloc[buy_pred_idxs],
-                 'g^', markersize=10, label='Buy Signal', alpha=0.7)
-        plt.plot(aligned_prices.index[sell_pred_idxs], aligned_prices.iloc[sell_pred_idxs],
-                 'rv', markersize=10, label='Sell Signal', alpha=0.7)
-        plt.title(f'{ticker} - Signals and Price Action')
-        plt.ylabel('Price ($)')
-        plt.legend()
-        plt.grid(alpha=0.3)
-        
-        # Equity curve (step function showing flat capital when no position)
-        plt.subplot(2, 1, 2)
-        if summary['total_trades'] > 0:
-            # Create step function: capital stays flat until trade closes
-            equity_values = []
-            equity_dates = []
+        doTradingPlots = True
+        if doTradingPlots:
+            # Plot
+            plt.figure(figsize=(14, 8))
             
-            current_capital = initial_capital
-            equity_values.append(current_capital)
-            equity_dates.append(aligned_prices.index[0])
+            # Price chart
+            plt.subplot(2, 1, 1)
+            plt.plot(aligned_prices, label='Price', linewidth=1.5)
+            plt.plot(aligned_prices.index[buy_pred_idxs], aligned_prices.iloc[buy_pred_idxs],
+                     'g^', markersize=10, label='Buy Signal', alpha=0.7)
+            plt.plot(aligned_prices.index[sell_pred_idxs], aligned_prices.iloc[sell_pred_idxs],
+                     'rv', markersize=10, label='Sell Signal', alpha=0.7)
+            plt.title(f'{ticker} - Signals and Price Action')
+            plt.ylabel('Price ($)')
+            plt.legend()
+            plt.grid(alpha=0.3)
             
-            for _, trade in trades_df.iterrows():
-                # Capital stays flat from previous close to new trade entry
-                equity_values.append(current_capital)
-                equity_dates.append(trade['entry_date'])
+            # Equity curve (step function showing flat capital when no position)
+            plt.subplot(2, 1, 2)
+            if summary['total_trades'] > 0:
+                # Create step function: capital stays flat until trade closes
+                equity_values = []
+                equity_dates = []
                 
-                # Capital changes at trade exit
-                current_capital = trade['capital_after']
+                current_capital = initial_capital
                 equity_values.append(current_capital)
-                equity_dates.append(trade['exit_date'])
+                equity_dates.append(aligned_prices.index[0])
+                
+                for _, trade in trades_df.iterrows():
+                    # Capital stays flat from previous close to new trade entry
+                    equity_values.append(current_capital)
+                    equity_dates.append(trade['entry_date'])
+                    
+                    # Capital changes at trade exit
+                    current_capital = trade['capital_after']
+                    equity_values.append(current_capital)
+                    equity_dates.append(trade['exit_date'])
+                
+                # Extend to end of data
+                equity_values.append(current_capital)
+                equity_dates.append(aligned_prices.index[-1])
+                
+                plt.plot(equity_dates, equity_values, 'b-', linewidth=2, label='Portfolio Value', drawstyle='steps-post')
+                plt.axhline(y=initial_capital, color='gray', linestyle='--', alpha=0.5, label='Starting Capital')
+                
+                # Shade profit/loss regions
+                equity_array = np.array(equity_values)
+                plt.fill_between(equity_dates, initial_capital, equity_values, 
+                               where=equity_array >= initial_capital, 
+                               color='green', alpha=0.3, label='Profit', step='post')
+                plt.fill_between(equity_dates, initial_capital, equity_values, 
+                               where=equity_array < initial_capital, 
+                               color='red', alpha=0.3, label='Loss', step='post')
+            else:
+                # No trades executed
+                plt.axhline(y=initial_capital, color='gray', linestyle='--', alpha=0.5, label='No Trades')
+                
+            plt.title(f'{ticker} - Equity Curve')
+            plt.ylabel('Portfolio Value ($)')
+            plt.xlabel('Date')
+            plt.legend()
+            plt.grid(alpha=0.3)
             
-            # Extend to end of data
-            equity_values.append(current_capital)
-            equity_dates.append(aligned_prices.index[-1])
-            
-            plt.plot(equity_dates, equity_values, 'b-', linewidth=2, label='Portfolio Value', drawstyle='steps-post')
-            plt.axhline(y=initial_capital, color='gray', linestyle='--', alpha=0.5, label='Starting Capital')
-            
-            # Shade profit/loss regions
-            equity_array = np.array(equity_values)
-            plt.fill_between(equity_dates, initial_capital, equity_values, 
-                           where=equity_array >= initial_capital, 
-                           color='green', alpha=0.3, label='Profit', step='post')
-            plt.fill_between(equity_dates, initial_capital, equity_values, 
-                           where=equity_array < initial_capital, 
-                           color='red', alpha=0.3, label='Loss', step='post')
-        else:
-            # No trades executed
-            plt.axhline(y=initial_capital, color='gray', linestyle='--', alpha=0.5, label='No Trades')
-            
-        plt.title(f'{ticker} - Equity Curve')
-        plt.ylabel('Portfolio Value ($)')
-        plt.xlabel('Date')
-        plt.legend()
-        plt.grid(alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
+            plt.tight_layout()
+            plt.show()
+    
     
     # Portfolio summary
     print(f"\n{'='*60}")
@@ -845,3 +855,45 @@ if __name__ == "__main__":
     sequential_return = (sequential_capital - initial_capital) / initial_capital * 100
     print(f"\n   Final Capital: ${sequential_capital:,.2f}")
     print(f"   Overall Return: {sequential_return:.2f}%")
+
+    # Create a dictionary map with tickers as keys and boolean as values
+    ticker_gains_map = {}
+    for ticker, results in portfolio_results.items():
+        total_return = results['total_return_pct']
+        ticker_gains_map[ticker] = total_return > 20.0
+    
+    # Save as numpy file (dictionary)
+    np.save('ticker_gains_map.npy', ticker_gains_map)
+    
+    # Also create a structured numpy array for more efficient storage
+    ticker_gains_structured = np.array(
+        [(ticker, gains) for ticker, gains in ticker_gains_map.items()],
+        dtype=[('ticker', 'U10'), ('above_20pct', bool)]
+    )
+    np.save('ticker_gains_structured.npy', ticker_gains_structured)
+    
+    print(f"\n{'='*60}")
+    print("TICKER GAINS FILTER (>20%)")
+    print(f"{'='*60}\n")
+    print(f"{'Ticker':<10} {'Return %':<12} {'Above 20%'}")
+    print(f"{'-'*40}")
+    for ticker, results in portfolio_results.items():
+        total_return = results['total_return_pct']
+        is_above = ticker_gains_map[ticker]
+        print(f"{ticker:<10} {total_return:>10.2f}% {str(is_above):>10}")
+    
+    print(f"\nSaved files:")
+    print(f"  - ticker_gains_map.npy (dictionary)")
+    print(f"  - ticker_gains_structured.npy (structured array)")
+    
+    print(f"\nTickers with >20% gains: {sum(ticker_gains_map.values())}")
+    print(f"Tickers with ≤20% gains: {len(ticker_gains_map) - sum(ticker_gains_map.values())}")
+    
+    print(f"\nTo load:")
+    print(f"  map_dict = np.load('ticker_gains_map.npy', allow_pickle=True).item()")
+    print(f"  structured = np.load('ticker_gains_structured.npy')")
+    print(f"\nAccess examples:")
+    print(f"  map_dict['AAPL']  # Returns True/False")
+    print(f"  structured['ticker']  # Array of all tickers")
+    print(f"  structured['above_20pct']  # Array of all booleans")
+    
