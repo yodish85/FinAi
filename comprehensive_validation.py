@@ -180,12 +180,12 @@ def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
         c2_is_trough = c2_t <= np.min(c2_win)
         
         # BUY: class2 peak and (class1 AND class0 trough)
-        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th :
+        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th  and c1_t <= 0.001:
             buy_mask[t] = True
             buy_strength[t] = c2_t - np.min(c2_win)
         
         # SELL: class1 peak and (class2 AND class0 trough)
-        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th :
+        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th and c2_t <= 0.001:
             sell_mask[t] = True
             sell_strength[t] = c1_t - np.min(c1_win)
     
@@ -580,9 +580,9 @@ if __name__ == "__main__":
     tickers = filter_sp500_tickers(tickers)
         
     # Load model
-    model_path = "/Users/admin/FinAi"
+    model_path = "/Users/admin/FinAi/"
     model = daily_check.load_model(model_path)
-    #tickers = ["GILD", "CMCSA", "NVDA", "VRSN"]
+    #tickers = ["UNP", "UPS", "COP", "MTCH", "DVN", "MGM", "MOS", "GPC", "DVA"]
     
     # Portfolio tracking
     initial_capital = 10000
@@ -592,9 +592,14 @@ if __name__ == "__main__":
     
     for ticker in tickers:
         
-        if not ticker_gains_map[ticker]:
+        # Skip if ticker not in map
+        if ticker not in ticker_gains_map:
+            print(f"Skipping {ticker} - not in gains map")
             continue
         
+        # Skip if gains are ≤20%
+        if not ticker_gains_map[ticker]:
+            continue
         print(f"\n{'='*60}")
         print(f"Processing {ticker}")
         print(f"{'='*60}\n")
@@ -862,15 +867,19 @@ if __name__ == "__main__":
         total_return = results['total_return_pct']
         ticker_gains_map[ticker] = total_return > 20.0
     
-    # Save as numpy file (dictionary)
-    np.save('ticker_gains_map.npy', ticker_gains_map)
     
     # Also create a structured numpy array for more efficient storage
     ticker_gains_structured = np.array(
         [(ticker, gains) for ticker, gains in ticker_gains_map.items()],
         dtype=[('ticker', 'U10'), ('above_20pct', bool)]
     )
-    np.save('ticker_gains_structured.npy', ticker_gains_structured)
+    
+    saveTickerMap = False
+    if saveTickerMap:
+        # Save as numpy file (dictionary)
+        np.save('ticker_gains_map.npy', ticker_gains_map)
+        np.save('ticker_gains_structured.npy', ticker_gains_structured)
+
     
     print(f"\n{'='*60}")
     print("TICKER GAINS FILTER (>20%)")

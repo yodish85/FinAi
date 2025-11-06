@@ -100,7 +100,7 @@ if __name__ == "__main__":
     buy_tickers_list = []
 
     # Load model
-    model = load_model('/Users/admin/FinAi')
+    model = load_model('/Users/admin/FinAi/')
     #all_symbols = ["STX", "TTD", "ALEX", "SNV", "MOS"]
 
     ticker_gains_map = np.load('/Users/admin/FinAi/ticker_gains_map.npy', allow_pickle=True).item()
@@ -115,7 +115,7 @@ if __name__ == "__main__":
         # Skip if gains are ≤20%
         if not ticker_gains_map[ticker]:
             continue
-            
+        
         print(f"Processing {i}/{len(all_symbols)}: {ticker}")
         
         # Fetch latest data
