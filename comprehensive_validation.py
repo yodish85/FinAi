@@ -205,6 +205,178 @@ def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
         },
     }
 
+def directional_confidence_signals_v2(
+        pred_test,
+        trend_window=3,
+        conf_th=0.0,
+        smooth_window=2,
+        window_offset=0,
+        min_strength=0.02,
+        min_rate=0.01,
+        rate_type='absolute',        # 'absolute' or 'relative'
+        last_m_growing=2,
+        require_monotonic=False,    # if True require strict monotonicity for last_m_growing
+        min_separation=5,           # bars between same-type signals
+        other_classes_max=0.2,      # allow other classes to be <= this
+        require_full_window=True    # if True, skip early indices without full window
+    ):
+    """
+    Improved directional signals using smoothed confidences (no future info).
+    Returns dict with buy_mask, sell_mask, buy_idx, sell_idx, strengths, details.
+    """
+    pred_test = np.asarray(pred_test, dtype=float)
+    if pred_test.ndim != 2 or pred_test.shape[1] < 3:
+        raise ValueError("pred_test must be shape (n, >=3 classes)")
+    n = pred_test.shape[0]
+
+    # Extract class confidences
+    c0 = pred_test[:, 0].copy()
+    c1 = pred_test[:, 1].copy()
+    c2 = pred_test[:, 2].copy()
+
+    # Causal smoothing (rolling mean uses only past/current)
+    c0 = pd.Series(c0).rolling(smooth_window, min_periods=1).mean().to_numpy()
+    c1 = pd.Series(c1).rolling(smooth_window, min_periods=1).mean().to_numpy()
+    c2 = pd.Series(c2).rolling(smooth_window, min_periods=1).mean().to_numpy()
+
+    buy_mask = np.zeros(n, dtype=bool)
+    sell_mask = np.zeros(n, dtype=bool)
+    buy_strength = np.zeros(n, dtype=float)
+    sell_strength = np.zeros(n, dtype=float)
+
+    # parameter sanitization
+    trend_window = max(1, int(trend_window))
+    smooth_window = max(1, int(smooth_window))
+    window_offset = int(window_offset)
+    if window_offset < 0:
+        raise ValueError("window_offset must be >= 0")
+    last_m_growing = max(1, int(last_m_growing))
+    if last_m_growing > trend_window:
+        raise ValueError("last_m_growing cannot be greater than trend_window")
+    if rate_type not in ('absolute', 'relative'):
+        raise ValueError("rate_type must be 'absolute' or 'relative'")
+    if min_rate < 0 or min_strength < 0 or other_classes_max < 0:
+        raise ValueError("min_rate, min_strength and other_classes_max must be non-negative")
+    min_separation = max(0, int(min_separation))
+
+    last_buy_t = -9999
+    last_sell_t = -9999
+
+    def per_step_rate(arr, rtype):
+        # compute per-step rate across arr (first -> last). returns per-step value.
+        first = arr[0]
+        last = arr[-1]
+        steps = max(1, arr.shape[0] - 1)
+        if rtype == 'absolute':
+            return (last - first) / steps
+        else:  # relative
+            if first == 0.0:
+                return np.inf if last > 0 else 0.0
+            return ((last - first) / first) / steps
+
+    for t in range(n):
+        # define window end (exclusive): end = t+1 - window_offset
+        end = t + 1 - window_offset
+        if end <= 0:
+            continue
+        start = max(0, end - trend_window)
+        window_len = end - start
+        if require_full_window and window_len < trend_window:
+            continue
+
+        # historical window (past only; no future)
+        c0_win = c0[start:end]
+        c1_win = c1[start:end]
+        c2_win = c2[start:end]
+
+        # current (at time t)
+        c0_t, c1_t, c2_t = c0[t], c1[t], c2[t]
+
+        # skip if any NaNs in the used window
+        if np.isnan(c0_win).any() or np.isnan(c1_win).any() or np.isnan(c2_win).any():
+            continue
+
+        # BUY rules: class2 peak and class1 & class0 trough (relative to past window)
+        c2_peak = (c2_t >= np.max(c2_win))   # >= ensures equality passes
+        c1_trough = (c1_t <= np.min(c1_win))
+        c0_trough = (c0_t <= np.min(c0_win))
+        others_low_for_buy = (c1_t <= other_classes_max) and (c0_t <= other_classes_max)
+
+        # compute strength: how much above the prior baseline (exclude current value when computing prior baseline if possible)
+        if c2_win.shape[0] > 1:
+            prior_max_c2 = np.max(c2_win[:-1])
+        else:
+            prior_max_c2 = np.min(c2_win)
+        c2_strength = float(c2_t - prior_max_c2)
+
+        c2_rate = per_step_rate(c2_win, rate_type)
+
+        # monotonic check for last m values of candidate class
+        last_m_ok_buy = True
+        if last_m_growing > 1:
+            last_vals = c2_win[-last_m_growing:]
+            if require_monotonic:
+                last_m_ok_buy = np.all(np.diff(last_vals) > 0)
+            else:
+                last_m_ok_buy = np.all(np.diff(last_vals) >= 0)
+
+        if (c2_peak and c1_trough and c0_trough and c2_t >= conf_th and others_low_for_buy
+                and c2_strength >= min_strength and c2_rate > min_rate and last_m_ok_buy):
+            if t - last_buy_t >= min_separation:
+                buy_mask[t] = True
+                buy_strength[t] = max(0.0, c2_strength)
+                last_buy_t = t
+
+        # SELL rules: class1 peak and class2 & class0 trough
+        c1_peak = (c1_t >= np.max(c1_win))
+        c2_trough = (c2_t <= np.min(c2_win))
+        c0_trough_s = (c0_t <= np.min(c0_win))
+        others_low_for_sell = (c2_t <= other_classes_max) and (c0_t <= other_classes_max)
+
+        if c1_win.shape[0] > 1:
+            prior_max_c1 = np.max(c1_win[:-1])
+        else:
+            prior_max_c1 = np.min(c1_win)
+        c1_strength = float(c1_t - prior_max_c1)
+        c1_rate = per_step_rate(c1_win, rate_type)
+
+        last_m_ok_sell = True
+        if last_m_growing > 1:
+            last_vals_s = c1_win[-last_m_growing:]
+            if require_monotonic:
+                last_m_ok_sell = np.all(np.diff(last_vals_s) > 0)
+            else:
+                last_m_ok_sell = np.all(np.diff(last_vals_s) >= 0)
+
+        if (c1_peak and c2_trough and c0_trough_s and c1_t >= conf_th and others_low_for_sell
+                and c1_strength >= min_strength and c1_rate > min_rate and last_m_ok_sell):
+            if t - last_sell_t >= min_separation:
+                sell_mask[t] = True
+                sell_strength[t] = max(0.0, c1_strength)
+                last_sell_t = t
+
+    return {
+        "buy_mask": buy_mask,
+        "sell_mask": sell_mask,
+        "buy_idx": np.where(buy_mask)[0],
+        "sell_idx": np.where(sell_mask)[0],
+        "buy_strength": buy_strength,
+        "sell_strength": sell_strength,
+        "details": {
+            "trend_window": trend_window,
+            "conf_th": conf_th,
+            "smooth_window": smooth_window,
+            "window_offset": window_offset,
+            "min_strength": min_strength,
+            "min_rate": min_rate,
+            "rate_type": rate_type,
+            "last_m_growing": last_m_growing,
+            "require_monotonic": require_monotonic,
+            "min_separation": min_separation,
+            "other_classes_max": other_classes_max,
+            "require_full_window": require_full_window,
+        },
+    }
 
 
 def find_high_confidence_clusters(confidences, pred_classes, target_class, 
@@ -430,9 +602,7 @@ class TradeSimulator:
         
         # Exit conditions: 5 days OR 10% gain OR 5% loss
         should_exit = (
-            (self.open_position['days_held'] >= 5) or 
-            (pct_change >= 0.10) or 
-            (pct_change <= -0.025)
+            (self.open_position['days_held'] >= 5)
         )
         
         if should_exit:
@@ -695,7 +865,7 @@ if __name__ == "__main__":
             plt.show()
 
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
-        res = directional_confidence_signals(
+        res = directional_confidence_signals_v2(
             pred_test,
             trend_window=3,
             conf_th=0.8,
