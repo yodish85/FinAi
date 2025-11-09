@@ -770,6 +770,7 @@ if __name__ == "__main__":
         # Skip if gains are ≤20%
         if not ticker_gains_map[ticker]:
             continue
+        
         print(f"\n{'='*60}")
         print(f"Processing {ticker}")
         print(f"{'='*60}\n")
@@ -865,7 +866,7 @@ if __name__ == "__main__":
             plt.show()
 
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
-        res = directional_confidence_signals_v2(
+        res = directional_confidence_signals(
             pred_test,
             trend_window=3,
             conf_th=0.8,
@@ -1031,24 +1032,71 @@ if __name__ == "__main__":
     print(f"\n   Final Capital: ${sequential_capital:,.2f}")
     print(f"   Overall Return: {sequential_return:.2f}%")
 
-    # Create a dictionary map with tickers as keys and boolean as values
+    # --------- FILTER & SAVE TICKER MAP based on multi-criteria ----------
+    # Criteria — adjust values here if you want different thresholds
+    MIN_RETURN_PCT = 10.0
+    MAX_DRAWDOWN_ALLOWED = -10.0   # interpreted as "max_drawdown must be >= 0.0"
+    MIN_WIN_RATE = 60.0          # in percent (e.g. 70.0 means 70%)
+    MIN_TOTAL_TRADES = 5
+
     ticker_gains_map = {}
+    ticker_info_list = []
+
     for ticker, results in portfolio_results.items():
-        total_return = results['total_return_pct']
-        ticker_gains_map[ticker] = total_return > 20.0
-    
-    
-    # Also create a structured numpy array for more efficient storage
-    ticker_gains_structured = np.array(
-        [(ticker, gains) for ticker, gains in ticker_gains_map.items()],
-        dtype=[('ticker', 'U10'), ('above_20pct', bool)]
-    )
-    
+        total_return_pct = float(results.get('total_return_pct', 0.0))
+        max_drawdown = float(results.get('max_drawdown', -999.0))   # expecting percent, negative numbers for drawdown
+        win_rate = float(results.get('win_rate', 0.0))
+        total_trades = int(results.get('total_trades', 0))
+
+        meets_criteria = (
+            (total_return_pct > MIN_RETURN_PCT) and
+            (max_drawdown >= MAX_DRAWDOWN_ALLOWED) and
+            (win_rate >= MIN_WIN_RATE) and
+            (total_trades >= MIN_TOTAL_TRADES)
+        )
+
+        ticker_gains_map[ticker] = meets_criteria
+        ticker_info_list.append((ticker, total_return_pct, max_drawdown, win_rate, total_trades, meets_criteria))
+
+    # Structured array dtype with extra numeric fields for inspection
+    dtype = [
+        ('ticker', 'U16'),
+        ('total_return_pct', 'f4'),
+        ('max_drawdown', 'f4'),
+        ('win_rate', 'f4'),
+        ('total_trades', 'i4'),
+        ('passed', '?')
+    ]
+    ticker_gains_structured = np.array(ticker_info_list, dtype=dtype)
+
+    # Save to disk (set to True to save)
     saveTickerMap = False
+    out_dir = "/Users/admin/FinAi"
+    os.makedirs(out_dir, exist_ok=True)
+    dict_path = os.path.join(out_dir, 'ticker_gains_map.npy')
+    struct_path = os.path.join(out_dir, 'ticker_gains_structured.npy')
+
     if saveTickerMap:
-        # Save as numpy file (dictionary)
-        np.save('ticker_gains_map.npy', ticker_gains_map)
-        np.save('ticker_gains_structured.npy', ticker_gains_structured)
+        # dictionary (use allow_pickle when loading)
+        np.save(dict_path, ticker_gains_map, allow_pickle=True)
+        # structured array (normal .npy)
+        np.save(struct_path, ticker_gains_structured)
+        print(f"Saved map -> {dict_path}")
+        print(f"Saved structured -> {struct_path}")
+
+    # PRINT SUMMARY (new)
+    print(f"\n{'='*60}")
+    print("TICKER GAINS FILTER (combined criteria)")
+    print(f"{'='*60}\n")
+    print(f"{'Ticker':<10} {'Return %':>9} {'MaxDD':>9} {'Win%':>8} {'Trades':>8} {'Passed':>8}")
+    print('-' * 60)
+    for rec in ticker_gains_structured:
+        print(f"{rec['ticker']:<10} {rec['total_return_pct']:9.2f} {rec['max_drawdown']:9.2f} {rec['win_rate']:8.2f} {rec['total_trades']:8d} {str(bool(rec['passed'])):>8}")
+
+    passed_count = sum(ticker_gains_map.values())
+    total_count = len(ticker_gains_map)
+    print(f"\nTickers passing criteria: {passed_count} / {total_count}")
+    print(f"Criteria: total_return > {MIN_RETURN_PCT}%, max_drawdown >= {MAX_DRAWDOWN_ALLOWED}%, win_rate >= {MIN_WIN_RATE}%, total_trades >= {MIN_TOTAL_TRADES}")
 
     
     print(f"\n{'='*60}")
@@ -1065,14 +1113,4 @@ if __name__ == "__main__":
     print(f"  - ticker_gains_map.npy (dictionary)")
     print(f"  - ticker_gains_structured.npy (structured array)")
     
-    print(f"\nTickers with >20% gains: {sum(ticker_gains_map.values())}")
-    print(f"Tickers with ≤20% gains: {len(ticker_gains_map) - sum(ticker_gains_map.values())}")
-    
-    print(f"\nTo load:")
-    print(f"  map_dict = np.load('ticker_gains_map.npy', allow_pickle=True).item()")
-    print(f"  structured = np.load('ticker_gains_structured.npy')")
-    print(f"\nAccess examples:")
-    print(f"  map_dict['AAPL']  # Returns True/False")
-    print(f"  structured['ticker']  # Array of all tickers")
-    print(f"  structured['above_20pct']  # Array of all booleans")
     
