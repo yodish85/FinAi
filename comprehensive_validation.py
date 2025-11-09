@@ -533,17 +533,35 @@ def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
     return df.set_index("index").loc[keep_indices]
 
 class TradeSimulator:
-    """Simulates trades with 5-day hold or 10% gain exit strategy."""
+    """Simulates trades with 5-day hold or 10% gain exit strategy, including eToro spreads."""
     
-    def __init__(self, initial_capital=10000):
+    # eToro typical spreads (in %) - these are approximate, adjust based on actual eToro rates
+    ETORO_SPREADS = {
+        'stocks': 0.09,      # 0.09% for US stocks (9 pips)
+        'indices': 0.75,     # varies by index
+        'commodities': 0.05, # varies significantly
+        'crypto': 0.75,      # crypto spreads are much higher
+        'forex': 0.0001,     # example for major pairs (in pips)
+    }
+    
+    def __init__(self, initial_capital=10000, spread_pct=0.09):
+        """
+        Initialize simulator with capital and spread.
+        
+        Args:
+            initial_capital (float): Starting capital
+            spread_pct (float): Spread percentage (default 0.09% for US stocks)
+        """
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.trades = []
         self.open_position = None
+        self.spread_pct = spread_pct / 100  # Convert to decimal
+        self.total_spread_cost = 0
         
     def execute_trade(self, idx, action, price, dates):
         """
-        Execute a buy or sell trade.
+        Execute a buy or sell trade with spread cost.
         
         Args:
             idx (int): Current index in price array
@@ -552,32 +570,46 @@ class TradeSimulator:
             dates (pd.DatetimeIndex): Date index
         """
         if action == 'buy' and self.open_position is None:
+            # Apply spread: buying costs more
+            entry_price_with_spread = price * (1 + self.spread_pct)
+            spread_cost = price * self.spread_pct
+            
             # Open long position
-            shares = self.capital / price
+            shares = self.capital / entry_price_with_spread
             self.open_position = {
                 'type': 'long',
                 'entry_idx': idx,
                 'entry_date': dates[idx],
-                'entry_price': price,
+                'entry_price': entry_price_with_spread,
+                'market_price': price,
                 'shares': shares,
-                'days_held': 0
+                'days_held': 0,
+                'spread_cost': spread_cost * shares
             }
+            self.total_spread_cost += spread_cost * shares
             
         elif action == 'sell' and self.open_position is None:
+            # Apply spread: shorting entry uses bid price (lower)
+            entry_price_with_spread = price * (1 - self.spread_pct)
+            spread_cost = price * self.spread_pct
+            
             # Open short position
-            shares = self.capital / price
+            shares = self.capital / price  # Use market price for position sizing
             self.open_position = {
                 'type': 'short',
                 'entry_idx': idx,
                 'entry_date': dates[idx],
-                'entry_price': price,
+                'entry_price': entry_price_with_spread,
+                'market_price': price,
                 'shares': shares,
-                'days_held': 0
+                'days_held': 0,
+                'spread_cost': spread_cost * shares
             }
+            self.total_spread_cost += spread_cost * shares
     
     def check_exit(self, idx, price, dates):
         """
-        Check if position should be closed (5 days, 10% gain, or 5% loss).
+        Check if position should be closed (5 days), accounting for spread on exit.
         
         Args:
             idx (int): Current index
@@ -593,20 +625,38 @@ class TradeSimulator:
         self.open_position['days_held'] += 1
         entry_price = self.open_position['entry_price']
         pos_type = self.open_position['type']
+        shares = self.open_position['shares']
         
-        # Calculate gain/loss
         if pos_type == 'long':
             pct_change = (price - entry_price) / entry_price
-        else:  # short
-            pct_change = (entry_price - price) / entry_price
-        
-        # Exit conditions: 5 days OR 10% gain OR 5% loss
+        else:
+            pct_change = (entry_price - price) / entry_price 
+            
+        # Exit conditions: 5 days
         should_exit = (
-            (self.open_position['days_held'] >= 5)
+            (self.open_position['days_held'] >= 5)      # Time limit
         )
         
         if should_exit:
-            # Calculate new capital based on the actual pct_change
+            # Apply spread on exit
+            if pos_type == 'long':
+                # Selling: get bid price (lower)
+                exit_price_with_spread = price * (1 - self.spread_pct)
+                exit_spread_cost = price * self.spread_pct * shares
+            else:  # short
+                # Buying back: pay ask price (higher)
+                exit_price_with_spread = price * (1 + self.spread_pct)
+                exit_spread_cost = price * self.spread_pct * shares
+            
+            self.total_spread_cost += exit_spread_cost
+            
+            # Calculate gain/loss using prices with spread
+            if pos_type == 'long':
+                pct_change = (exit_price_with_spread - entry_price) / entry_price
+            else:  # short
+                pct_change = (entry_price - exit_price_with_spread) / entry_price
+            
+            # Calculate new capital
             exit_value = self.capital * (1 + pct_change)
             profit = exit_value - self.capital
             
@@ -615,12 +665,17 @@ class TradeSimulator:
                 'type': pos_type,
                 'entry_date': self.open_position['entry_date'],
                 'entry_price': entry_price,
+                'market_entry_price': self.open_position['market_price'],
                 'exit_date': dates[idx],
-                'exit_price': price,
+                'exit_price': exit_price_with_spread,
+                'market_exit_price': price,
                 'days_held': self.open_position['days_held'],
                 'pct_return': pct_change * 100,
                 'profit': profit,
                 'capital_after': exit_value,
+                'entry_spread_cost': self.open_position['spread_cost'],
+                'exit_spread_cost': exit_spread_cost,
+                'total_spread_cost': self.open_position['spread_cost'] + exit_spread_cost,
                 'exit_reason': self._get_exit_reason(self.open_position['days_held'], pct_change)
             }
             
@@ -642,15 +697,26 @@ class TradeSimulator:
         return 'unknown'
     
     def close_final_position(self, price, date):
-        """Force close any remaining open position at end of data."""
+        """Force close any remaining open position at end of data with spread."""
         if self.open_position is not None:
             entry_price = self.open_position['entry_price']
             pos_type = self.open_position['type']
+            shares = self.open_position['shares']
+            
+            # Apply spread on exit
+            if pos_type == 'long':
+                exit_price_with_spread = price * (1 - self.spread_pct)
+                exit_spread_cost = price * self.spread_pct * shares
+            else:
+                exit_price_with_spread = price * (1 + self.spread_pct)
+                exit_spread_cost = price * self.spread_pct * shares
+            
+            self.total_spread_cost += exit_spread_cost
             
             if pos_type == 'long':
-                pct_change = (price - entry_price) / entry_price
+                pct_change = (exit_price_with_spread - entry_price) / entry_price
             else:
-                pct_change = (entry_price - price) / entry_price
+                pct_change = (entry_price - exit_price_with_spread) / entry_price
             
             exit_value = self.capital * (1 + pct_change)
             profit = exit_value - self.capital
@@ -660,12 +726,18 @@ class TradeSimulator:
                 'type': pos_type,
                 'entry_date': self.open_position['entry_date'],
                 'entry_price': entry_price,
+                'market_entry_price': self.open_position['market_price'],
                 'exit_date': date,
-                'exit_price': price,
+                'exit_price': exit_price_with_spread,
+                'market_exit_price': price,
                 'days_held': self.open_position['days_held'],
                 'pct_return': pct_change * 100,
                 'profit': profit,
-                'capital_after': exit_value
+                'capital_after': exit_value,
+                'entry_spread_cost': self.open_position['spread_cost'],
+                'exit_spread_cost': exit_spread_cost,
+                'total_spread_cost': self.open_position['spread_cost'] + exit_spread_cost,
+                'exit_reason': 'end_of_data'
             }
             
             self.trades.append(trade_record)
@@ -673,7 +745,7 @@ class TradeSimulator:
             self.open_position = None
     
     def get_performance_summary(self):
-        """Generate performance statistics."""
+        """Generate performance statistics including spread costs."""
         if not self.trades:
             summary = {
                 'total_trades': 0,
@@ -685,9 +757,12 @@ class TradeSimulator:
                 'avg_losing_return': 0,
                 'total_return_pct': 0,
                 'final_capital': self.initial_capital,
-                'max_drawdown': 0
+                'max_drawdown': 0,
+                'total_spread_cost': 0,
+                'spread_pct_of_initial': 0,
+                'avg_spread_per_trade': 0
             }
-            return summary, pd.DataFrame()  # Return empty DataFrame
+            return summary, pd.DataFrame()
         
         df_trades = pd.DataFrame(self.trades)
         
@@ -704,27 +779,10 @@ class TradeSimulator:
             'avg_losing_return': losing_trades['pct_return'].mean() if len(losing_trades) > 0 else 0,
             'total_return_pct': (self.capital - self.initial_capital) / self.initial_capital * 100,
             'final_capital': self.capital,
-            'max_drawdown': self.calculate_max_drawdown(df_trades)
-        }
-        
-        return summary, df_trades
-        
-        df_trades = pd.DataFrame(self.trades)
-        
-        winning_trades = df_trades[df_trades['pct_return'] > 0]
-        losing_trades = df_trades[df_trades['pct_return'] <= 0]
-        
-        summary = {
-            'total_trades': len(df_trades),
-            'winning_trades': len(winning_trades),
-            'losing_trades': len(losing_trades),
-            'win_rate': len(winning_trades) / len(df_trades) * 100 if len(df_trades) > 0 else 0,
-            'avg_return_pct': df_trades['pct_return'].mean(),
-            'avg_winning_return': winning_trades['pct_return'].mean() if len(winning_trades) > 0 else 0,
-            'avg_losing_return': losing_trades['pct_return'].mean() if len(losing_trades) > 0 else 0,
-            'total_return_pct': (self.capital - self.initial_capital) / self.initial_capital * 100,
-            'final_capital': self.capital,
-            'max_drawdown': self.calculate_max_drawdown(df_trades)
+            'max_drawdown': self.calculate_max_drawdown(df_trades),
+            'total_spread_cost': self.total_spread_cost,
+            'spread_pct_of_initial': (self.total_spread_cost / self.initial_capital) * 100,
+            'avg_spread_per_trade': df_trades['total_spread_cost'].mean() if len(df_trades) > 0 else 0
         }
         
         return summary, df_trades
@@ -743,6 +801,7 @@ class TradeSimulator:
         
         return drawdown.min()
 
+
 if __name__ == "__main__":
     data_path = "/Users/admin/FinAi/market_data/"
     tickers = get_symbols_from_folder(data_path)
@@ -752,7 +811,7 @@ if __name__ == "__main__":
     # Load model
     model_path = "/Users/admin/FinAi/"
     model = daily_check.load_model(model_path)
-    #tickers = ["UNP", "UPS", "COP", "MTCH", "DVN", "MGM", "MOS", "GPC", "DVA"]
+    #tickers = ["LRCX"]
     
     # Portfolio tracking
     initial_capital = 10000
@@ -881,7 +940,7 @@ if __name__ == "__main__":
         sell_pred_idxs = np.where(sell_mask)[0]
         
         # --- SIMULATE TRADES ---
-        simulator = TradeSimulator(initial_capital=initial_capital)
+        simulator = TradeSimulator(initial_capital=initial_capital, spread_pct=0.09)
         
         for i in range(len(prices_np)):
             # Check if we should exit an open position
