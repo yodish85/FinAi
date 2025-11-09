@@ -868,7 +868,7 @@ if __name__ == "__main__":
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = directional_confidence_signals(
             pred_test,
-            trend_window=3,
+            trend_window=2,
             conf_th=0.8,
         )
 
