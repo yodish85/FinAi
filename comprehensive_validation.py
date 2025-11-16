@@ -60,6 +60,11 @@ def require_price_below_ma(prices, signal_mask, ma_period=200):
     above_ma = s < ma_long
     return signal_mask & above_ma.fillna(False).to_numpy()
 
+from pathlib import Path
+
+CACHE_PATH = Path("/Users/admin/FinAi/market_data/sp500_tickers.csv")
+CACHE_TTL = 24 * 3600  # 1 day
+
 def fetch_sp500_from_wikipedia():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     headers = {
@@ -68,9 +73,21 @@ def fetch_sp500_from_wikipedia():
     }
     r = requests.get(url, headers=headers, timeout=15)
     r.raise_for_status()
-    df = pd.read_html(r.text, displayed_only=False)[0]
-    symbols = [s.replace('.', '-') for s in df['Symbol'].astype(str).tolist()]
-    return symbols
+    tables = pd.read_html(r.text, displayed_only=False)
+    
+    # find the table that contains the 'Symbol' column
+    for df in tables:
+        if 'Symbol' in df.columns:
+            symbols = [s.replace('.', '-') for s in df['Symbol'].astype(str).tolist()]
+            return symbols
+    
+    # fallback: use the first table if none has 'Symbol'
+    df = tables[0]
+    if 'Symbol' in df.columns:
+        symbols = [s.replace('.', '-') for s in df['Symbol'].astype(str).tolist()]
+        return symbols
+    
+    raise RuntimeError("Could not find a table with a 'Symbol' column on Wikipedia")
 
 def read_sp500_from_cache():
     if not CACHE_PATH.exists():
@@ -100,7 +117,7 @@ def get_sp500_tickers():
         # log but continue to fallback
         print(f"Warning: failed to fetch S&P 500 from Wikipedia: {e}")
 
-    # 3) last-resort fallback: if you want, load a local static file shipped with your repo
+    # 3) last-resort fallback: local static file shipped with repo
     local = Path("data/sp500_static.csv")
     if local.exists():
         df = pd.read_csv(local)
@@ -111,6 +128,7 @@ def get_sp500_tickers():
 def filter_sp500_tickers(tickers):
     sp500 = set(get_sp500_tickers())
     return [t for t in tickers if t in sp500]
+
 
 def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
                                    smooth_window=2, window_offset=0):
@@ -923,22 +941,35 @@ if __name__ == "__main__":
             plt.title(f"Price vs Smoothed Class Confidences ({n_classes} classes, window={window})")
             plt.tight_layout()
             plt.show()
-
+        
+        conf_th = 0.8
+        
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = directional_confidence_signals(
             pred_test,
             trend_window=2,
-            conf_th=0.8,
+            conf_th=conf_th,
         )
+        
+        buy_clusters_mask = find_high_confidence_clusters(confidences, pred_classes, target_class=2, 
+                                           conf_threshold=conf_th, min_cluster_size=5, 
+                                           last_n_growing=2, proximity_pct=0.90)
+        sell_clusters_mask = find_high_confidence_clusters(confidences, pred_classes, target_class=1, 
+                                           conf_threshold=conf_th, min_cluster_size=5, 
+                                           last_n_growing=2, proximity_pct=0.90)
 
         # Apply price filters
-        buy_mask = res['buy_mask'].copy()
-        sell_mask = res['sell_mask'].copy()
+        buy_mask = res['buy_mask'].copy() & buy_clusters_mask
+        sell_mask = res['sell_mask'].copy() & sell_clusters_mask
 
         # 4. Use filtered masks
         buy_pred_idxs = np.where(buy_mask)[0]
         sell_pred_idxs = np.where(sell_mask)[0]
         
+        # remove any predicted indices that exceed mask length
+        buy_pred_idxs = buy_pred_idxs[buy_pred_idxs < len(buy_mask)]
+        sell_pred_idxs = sell_pred_idxs[sell_pred_idxs < len(sell_mask)]
+
         # --- SIMULATE TRADES ---
         simulator = TradeSimulator(initial_capital=initial_capital, spread_pct=0.09)
         

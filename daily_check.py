@@ -160,23 +160,29 @@ if __name__ == "__main__":
         confidences = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
         
+        conf_th = 0.8
+        
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = comprehensive_validation.directional_confidence_signals(
             pred_test,
-            trend_window=3,
-            conf_th=0.8,
+            trend_window=2,
+            conf_th=conf_th,
         )
         
-        # Inspect indices
-        print("Buy points idx:", res['buy_idx'])
-        print("Sell points idx:", res['sell_idx'])
-        
-        buy_mask = res["buy_mask"]
-        sell_mask = res["sell_mask"]
+        buy_clusters_mask = comprehensive_validation.find_high_confidence_clusters(confidences, pred_classes, target_class=2, 
+                                           conf_threshold=conf_th, min_cluster_size=5, 
+                                           last_n_growing=2, proximity_pct=0.90)
+        sell_clusters_mask = comprehensive_validation.find_high_confidence_clusters(confidences, pred_classes, target_class=1, 
+                                           conf_threshold=conf_th, min_cluster_size=5, 
+                                           last_n_growing=2, proximity_pct=0.90)
+
+        # Apply price filters
+        buy_mask = res['buy_mask'].copy() & buy_clusters_mask
+        sell_mask = res['sell_mask'].copy() & sell_clusters_mask
         
         # Only populate if the LAST element is True
-        buy_pred_idxs = np.where(buy_mask)[0] if buy_mask[-1] else np.array([])
-        sell_pred_idxs = np.where(sell_mask)[0] if sell_mask[-1] else np.array([])
+        buy_pred_idxs = np.array([len(buy_mask) - 1]) if buy_mask[-1] else np.array([])
+        sell_pred_idxs = np.array([len(sell_mask) - 1]) if sell_mask[-1] else np.array([])
         
         # Retain only the last sell signal
         if sell_pred_idxs.size > 0:
