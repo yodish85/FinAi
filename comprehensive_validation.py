@@ -952,10 +952,10 @@ if __name__ == "__main__":
         )
         
         buy_clusters_mask = find_high_confidence_clusters(confidences, pred_classes, target_class=2, 
-                                           conf_threshold=conf_th, min_cluster_size=5, 
+                                           conf_threshold=conf_th, min_cluster_size=2, 
                                            last_n_growing=2, proximity_pct=0.90)
         sell_clusters_mask = find_high_confidence_clusters(confidences, pred_classes, target_class=1, 
-                                           conf_threshold=conf_th, min_cluster_size=5, 
+                                           conf_threshold=conf_th, min_cluster_size=2, 
                                            last_n_growing=2, proximity_pct=0.90)
 
         # Apply price filters
