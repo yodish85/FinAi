@@ -60,6 +60,11 @@ def require_price_below_ma(prices, signal_mask, ma_period=200):
     above_ma = s < ma_long
     return signal_mask & above_ma.fillna(False).to_numpy()
 
+from pathlib import Path
+
+CACHE_PATH = Path("/Users/admin/FinAi/market_data/sp500_tickers.csv")
+CACHE_TTL = 24 * 3600  # 1 day
+
 def fetch_sp500_from_wikipedia():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     headers = {
@@ -68,9 +73,21 @@ def fetch_sp500_from_wikipedia():
     }
     r = requests.get(url, headers=headers, timeout=15)
     r.raise_for_status()
-    df = pd.read_html(r.text, displayed_only=False)[0]
-    symbols = [s.replace('.', '-') for s in df['Symbol'].astype(str).tolist()]
-    return symbols
+    tables = pd.read_html(r.text, displayed_only=False)
+    
+    # find the table that contains the 'Symbol' column
+    for df in tables:
+        if 'Symbol' in df.columns:
+            symbols = [s.replace('.', '-') for s in df['Symbol'].astype(str).tolist()]
+            return symbols
+    
+    # fallback: use the first table if none has 'Symbol'
+    df = tables[0]
+    if 'Symbol' in df.columns:
+        symbols = [s.replace('.', '-') for s in df['Symbol'].astype(str).tolist()]
+        return symbols
+    
+    raise RuntimeError("Could not find a table with a 'Symbol' column on Wikipedia")
 
 def read_sp500_from_cache():
     if not CACHE_PATH.exists():
@@ -100,7 +117,7 @@ def get_sp500_tickers():
         # log but continue to fallback
         print(f"Warning: failed to fetch S&P 500 from Wikipedia: {e}")
 
-    # 3) last-resort fallback: if you want, load a local static file shipped with your repo
+    # 3) last-resort fallback: local static file shipped with repo
     local = Path("data/sp500_static.csv")
     if local.exists():
         df = pd.read_csv(local)
@@ -111,6 +128,7 @@ def get_sp500_tickers():
 def filter_sp500_tickers(tickers):
     sp500 = set(get_sp500_tickers())
     return [t for t in tickers if t in sp500]
+
 
 def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
                                    smooth_window=2, window_offset=0):
@@ -180,12 +198,12 @@ def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
         c2_is_trough = c2_t <= np.min(c2_win)
         
         # BUY: class2 peak and (class1 AND class0 trough)
-        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th  and c1_t <= 0.001:
+        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th:
             buy_mask[t] = True
             buy_strength[t] = c2_t - np.min(c2_win)
         
         # SELL: class1 peak and (class2 AND class0 trough)
-        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th and c2_t <= 0.001:
+        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th:
             sell_mask[t] = True
             sell_strength[t] = c1_t - np.min(c1_win)
     
@@ -205,6 +223,178 @@ def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
         },
     }
 
+def directional_confidence_signals_v2(
+        pred_test,
+        trend_window=3,
+        conf_th=0.0,
+        smooth_window=2,
+        window_offset=0,
+        min_strength=0.02,
+        min_rate=0.01,
+        rate_type='absolute',        # 'absolute' or 'relative'
+        last_m_growing=2,
+        require_monotonic=False,    # if True require strict monotonicity for last_m_growing
+        min_separation=5,           # bars between same-type signals
+        other_classes_max=0.2,      # allow other classes to be <= this
+        require_full_window=True    # if True, skip early indices without full window
+    ):
+    """
+    Improved directional signals using smoothed confidences (no future info).
+    Returns dict with buy_mask, sell_mask, buy_idx, sell_idx, strengths, details.
+    """
+    pred_test = np.asarray(pred_test, dtype=float)
+    if pred_test.ndim != 2 or pred_test.shape[1] < 3:
+        raise ValueError("pred_test must be shape (n, >=3 classes)")
+    n = pred_test.shape[0]
+
+    # Extract class confidences
+    c0 = pred_test[:, 0].copy()
+    c1 = pred_test[:, 1].copy()
+    c2 = pred_test[:, 2].copy()
+
+    # Causal smoothing (rolling mean uses only past/current)
+    c0 = pd.Series(c0).rolling(smooth_window, min_periods=1).mean().to_numpy()
+    c1 = pd.Series(c1).rolling(smooth_window, min_periods=1).mean().to_numpy()
+    c2 = pd.Series(c2).rolling(smooth_window, min_periods=1).mean().to_numpy()
+
+    buy_mask = np.zeros(n, dtype=bool)
+    sell_mask = np.zeros(n, dtype=bool)
+    buy_strength = np.zeros(n, dtype=float)
+    sell_strength = np.zeros(n, dtype=float)
+
+    # parameter sanitization
+    trend_window = max(1, int(trend_window))
+    smooth_window = max(1, int(smooth_window))
+    window_offset = int(window_offset)
+    if window_offset < 0:
+        raise ValueError("window_offset must be >= 0")
+    last_m_growing = max(1, int(last_m_growing))
+    if last_m_growing > trend_window:
+        raise ValueError("last_m_growing cannot be greater than trend_window")
+    if rate_type not in ('absolute', 'relative'):
+        raise ValueError("rate_type must be 'absolute' or 'relative'")
+    if min_rate < 0 or min_strength < 0 or other_classes_max < 0:
+        raise ValueError("min_rate, min_strength and other_classes_max must be non-negative")
+    min_separation = max(0, int(min_separation))
+
+    last_buy_t = -9999
+    last_sell_t = -9999
+
+    def per_step_rate(arr, rtype):
+        # compute per-step rate across arr (first -> last). returns per-step value.
+        first = arr[0]
+        last = arr[-1]
+        steps = max(1, arr.shape[0] - 1)
+        if rtype == 'absolute':
+            return (last - first) / steps
+        else:  # relative
+            if first == 0.0:
+                return np.inf if last > 0 else 0.0
+            return ((last - first) / first) / steps
+
+    for t in range(n):
+        # define window end (exclusive): end = t+1 - window_offset
+        end = t + 1 - window_offset
+        if end <= 0:
+            continue
+        start = max(0, end - trend_window)
+        window_len = end - start
+        if require_full_window and window_len < trend_window:
+            continue
+
+        # historical window (past only; no future)
+        c0_win = c0[start:end]
+        c1_win = c1[start:end]
+        c2_win = c2[start:end]
+
+        # current (at time t)
+        c0_t, c1_t, c2_t = c0[t], c1[t], c2[t]
+
+        # skip if any NaNs in the used window
+        if np.isnan(c0_win).any() or np.isnan(c1_win).any() or np.isnan(c2_win).any():
+            continue
+
+        # BUY rules: class2 peak and class1 & class0 trough (relative to past window)
+        c2_peak = (c2_t >= np.max(c2_win))   # >= ensures equality passes
+        c1_trough = (c1_t <= np.min(c1_win))
+        c0_trough = (c0_t <= np.min(c0_win))
+        others_low_for_buy = (c1_t <= other_classes_max) and (c0_t <= other_classes_max)
+
+        # compute strength: how much above the prior baseline (exclude current value when computing prior baseline if possible)
+        if c2_win.shape[0] > 1:
+            prior_max_c2 = np.max(c2_win[:-1])
+        else:
+            prior_max_c2 = np.min(c2_win)
+        c2_strength = float(c2_t - prior_max_c2)
+
+        c2_rate = per_step_rate(c2_win, rate_type)
+
+        # monotonic check for last m values of candidate class
+        last_m_ok_buy = True
+        if last_m_growing > 1:
+            last_vals = c2_win[-last_m_growing:]
+            if require_monotonic:
+                last_m_ok_buy = np.all(np.diff(last_vals) > 0)
+            else:
+                last_m_ok_buy = np.all(np.diff(last_vals) >= 0)
+
+        if (c2_peak and c1_trough and c0_trough and c2_t >= conf_th and others_low_for_buy
+                and c2_strength >= min_strength and c2_rate > min_rate and last_m_ok_buy):
+            if t - last_buy_t >= min_separation:
+                buy_mask[t] = True
+                buy_strength[t] = max(0.0, c2_strength)
+                last_buy_t = t
+
+        # SELL rules: class1 peak and class2 & class0 trough
+        c1_peak = (c1_t >= np.max(c1_win))
+        c2_trough = (c2_t <= np.min(c2_win))
+        c0_trough_s = (c0_t <= np.min(c0_win))
+        others_low_for_sell = (c2_t <= other_classes_max) and (c0_t <= other_classes_max)
+
+        if c1_win.shape[0] > 1:
+            prior_max_c1 = np.max(c1_win[:-1])
+        else:
+            prior_max_c1 = np.min(c1_win)
+        c1_strength = float(c1_t - prior_max_c1)
+        c1_rate = per_step_rate(c1_win, rate_type)
+
+        last_m_ok_sell = True
+        if last_m_growing > 1:
+            last_vals_s = c1_win[-last_m_growing:]
+            if require_monotonic:
+                last_m_ok_sell = np.all(np.diff(last_vals_s) > 0)
+            else:
+                last_m_ok_sell = np.all(np.diff(last_vals_s) >= 0)
+
+        if (c1_peak and c2_trough and c0_trough_s and c1_t >= conf_th and others_low_for_sell
+                and c1_strength >= min_strength and c1_rate > min_rate and last_m_ok_sell):
+            if t - last_sell_t >= min_separation:
+                sell_mask[t] = True
+                sell_strength[t] = max(0.0, c1_strength)
+                last_sell_t = t
+
+    return {
+        "buy_mask": buy_mask,
+        "sell_mask": sell_mask,
+        "buy_idx": np.where(buy_mask)[0],
+        "sell_idx": np.where(sell_mask)[0],
+        "buy_strength": buy_strength,
+        "sell_strength": sell_strength,
+        "details": {
+            "trend_window": trend_window,
+            "conf_th": conf_th,
+            "smooth_window": smooth_window,
+            "window_offset": window_offset,
+            "min_strength": min_strength,
+            "min_rate": min_rate,
+            "rate_type": rate_type,
+            "last_m_growing": last_m_growing,
+            "require_monotonic": require_monotonic,
+            "min_separation": min_separation,
+            "other_classes_max": other_classes_max,
+            "require_full_window": require_full_window,
+        },
+    }
 
 
 def find_high_confidence_clusters(confidences, pred_classes, target_class, 
@@ -361,17 +551,35 @@ def filter_by_cluster_rule(df, min_count=3, window_days=5, conf_ratio=0.95):
     return df.set_index("index").loc[keep_indices]
 
 class TradeSimulator:
-    """Simulates trades with 5-day hold or 10% gain exit strategy."""
+    """Simulates trades with 5-day hold or 10% gain exit strategy, including eToro spreads."""
     
-    def __init__(self, initial_capital=10000):
+    # eToro typical spreads (in %) - these are approximate, adjust based on actual eToro rates
+    ETORO_SPREADS = {
+        'stocks': 0.09,      # 0.09% for US stocks (9 pips)
+        'indices': 0.75,     # varies by index
+        'commodities': 0.05, # varies significantly
+        'crypto': 0.75,      # crypto spreads are much higher
+        'forex': 0.0001,     # example for major pairs (in pips)
+    }
+    
+    def __init__(self, initial_capital=10000, spread_pct=0.09):
+        """
+        Initialize simulator with capital and spread.
+        
+        Args:
+            initial_capital (float): Starting capital
+            spread_pct (float): Spread percentage (default 0.09% for US stocks)
+        """
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.trades = []
         self.open_position = None
+        self.spread_pct = spread_pct / 100  # Convert to decimal
+        self.total_spread_cost = 0
         
     def execute_trade(self, idx, action, price, dates):
         """
-        Execute a buy or sell trade.
+        Execute a buy or sell trade with spread cost.
         
         Args:
             idx (int): Current index in price array
@@ -380,32 +588,46 @@ class TradeSimulator:
             dates (pd.DatetimeIndex): Date index
         """
         if action == 'buy' and self.open_position is None:
+            # Apply spread: buying costs more
+            entry_price_with_spread = price * (1 + self.spread_pct)
+            spread_cost = price * self.spread_pct
+            
             # Open long position
-            shares = self.capital / price
+            shares = self.capital / entry_price_with_spread
             self.open_position = {
                 'type': 'long',
                 'entry_idx': idx,
                 'entry_date': dates[idx],
-                'entry_price': price,
+                'entry_price': entry_price_with_spread,
+                'market_price': price,
                 'shares': shares,
-                'days_held': 0
+                'days_held': 0,
+                'spread_cost': spread_cost * shares
             }
+            self.total_spread_cost += spread_cost * shares
             
         elif action == 'sell' and self.open_position is None:
+            # Apply spread: shorting entry uses bid price (lower)
+            entry_price_with_spread = price * (1 - self.spread_pct)
+            spread_cost = price * self.spread_pct
+            
             # Open short position
-            shares = self.capital / price
+            shares = self.capital / price  # Use market price for position sizing
             self.open_position = {
                 'type': 'short',
                 'entry_idx': idx,
                 'entry_date': dates[idx],
-                'entry_price': price,
+                'entry_price': entry_price_with_spread,
+                'market_price': price,
                 'shares': shares,
-                'days_held': 0
+                'days_held': 0,
+                'spread_cost': spread_cost * shares
             }
+            self.total_spread_cost += spread_cost * shares
     
     def check_exit(self, idx, price, dates):
         """
-        Check if position should be closed (5 days, 10% gain, or 5% loss).
+        Check if position should be closed (5 days), accounting for spread on exit.
         
         Args:
             idx (int): Current index
@@ -421,22 +643,38 @@ class TradeSimulator:
         self.open_position['days_held'] += 1
         entry_price = self.open_position['entry_price']
         pos_type = self.open_position['type']
+        shares = self.open_position['shares']
         
-        # Calculate gain/loss
         if pos_type == 'long':
             pct_change = (price - entry_price) / entry_price
-        else:  # short
-            pct_change = (entry_price - price) / entry_price
-        
-        # Exit conditions: 5 days OR 10% gain OR 5% loss
+        else:
+            pct_change = (entry_price - price) / entry_price 
+            
+        # Exit conditions: 5 days
         should_exit = (
-            (self.open_position['days_held'] >= 5) or 
-            (pct_change >= 0.10) or 
-            (pct_change <= -0.025)
+            (self.open_position['days_held'] >= 5)      # Time limit
         )
         
         if should_exit:
-            # Calculate new capital based on the actual pct_change
+            # Apply spread on exit
+            if pos_type == 'long':
+                # Selling: get bid price (lower)
+                exit_price_with_spread = price * (1 - self.spread_pct)
+                exit_spread_cost = price * self.spread_pct * shares
+            else:  # short
+                # Buying back: pay ask price (higher)
+                exit_price_with_spread = price * (1 + self.spread_pct)
+                exit_spread_cost = price * self.spread_pct * shares
+            
+            self.total_spread_cost += exit_spread_cost
+            
+            # Calculate gain/loss using prices with spread
+            if pos_type == 'long':
+                pct_change = (exit_price_with_spread - entry_price) / entry_price
+            else:  # short
+                pct_change = (entry_price - exit_price_with_spread) / entry_price
+            
+            # Calculate new capital
             exit_value = self.capital * (1 + pct_change)
             profit = exit_value - self.capital
             
@@ -445,12 +683,17 @@ class TradeSimulator:
                 'type': pos_type,
                 'entry_date': self.open_position['entry_date'],
                 'entry_price': entry_price,
+                'market_entry_price': self.open_position['market_price'],
                 'exit_date': dates[idx],
-                'exit_price': price,
+                'exit_price': exit_price_with_spread,
+                'market_exit_price': price,
                 'days_held': self.open_position['days_held'],
                 'pct_return': pct_change * 100,
                 'profit': profit,
                 'capital_after': exit_value,
+                'entry_spread_cost': self.open_position['spread_cost'],
+                'exit_spread_cost': exit_spread_cost,
+                'total_spread_cost': self.open_position['spread_cost'] + exit_spread_cost,
                 'exit_reason': self._get_exit_reason(self.open_position['days_held'], pct_change)
             }
             
@@ -472,15 +715,26 @@ class TradeSimulator:
         return 'unknown'
     
     def close_final_position(self, price, date):
-        """Force close any remaining open position at end of data."""
+        """Force close any remaining open position at end of data with spread."""
         if self.open_position is not None:
             entry_price = self.open_position['entry_price']
             pos_type = self.open_position['type']
+            shares = self.open_position['shares']
+            
+            # Apply spread on exit
+            if pos_type == 'long':
+                exit_price_with_spread = price * (1 - self.spread_pct)
+                exit_spread_cost = price * self.spread_pct * shares
+            else:
+                exit_price_with_spread = price * (1 + self.spread_pct)
+                exit_spread_cost = price * self.spread_pct * shares
+            
+            self.total_spread_cost += exit_spread_cost
             
             if pos_type == 'long':
-                pct_change = (price - entry_price) / entry_price
+                pct_change = (exit_price_with_spread - entry_price) / entry_price
             else:
-                pct_change = (entry_price - price) / entry_price
+                pct_change = (entry_price - exit_price_with_spread) / entry_price
             
             exit_value = self.capital * (1 + pct_change)
             profit = exit_value - self.capital
@@ -490,12 +744,18 @@ class TradeSimulator:
                 'type': pos_type,
                 'entry_date': self.open_position['entry_date'],
                 'entry_price': entry_price,
+                'market_entry_price': self.open_position['market_price'],
                 'exit_date': date,
-                'exit_price': price,
+                'exit_price': exit_price_with_spread,
+                'market_exit_price': price,
                 'days_held': self.open_position['days_held'],
                 'pct_return': pct_change * 100,
                 'profit': profit,
-                'capital_after': exit_value
+                'capital_after': exit_value,
+                'entry_spread_cost': self.open_position['spread_cost'],
+                'exit_spread_cost': exit_spread_cost,
+                'total_spread_cost': self.open_position['spread_cost'] + exit_spread_cost,
+                'exit_reason': 'end_of_data'
             }
             
             self.trades.append(trade_record)
@@ -503,7 +763,7 @@ class TradeSimulator:
             self.open_position = None
     
     def get_performance_summary(self):
-        """Generate performance statistics."""
+        """Generate performance statistics including spread costs."""
         if not self.trades:
             summary = {
                 'total_trades': 0,
@@ -515,9 +775,12 @@ class TradeSimulator:
                 'avg_losing_return': 0,
                 'total_return_pct': 0,
                 'final_capital': self.initial_capital,
-                'max_drawdown': 0
+                'max_drawdown': 0,
+                'total_spread_cost': 0,
+                'spread_pct_of_initial': 0,
+                'avg_spread_per_trade': 0
             }
-            return summary, pd.DataFrame()  # Return empty DataFrame
+            return summary, pd.DataFrame()
         
         df_trades = pd.DataFrame(self.trades)
         
@@ -534,27 +797,10 @@ class TradeSimulator:
             'avg_losing_return': losing_trades['pct_return'].mean() if len(losing_trades) > 0 else 0,
             'total_return_pct': (self.capital - self.initial_capital) / self.initial_capital * 100,
             'final_capital': self.capital,
-            'max_drawdown': self.calculate_max_drawdown(df_trades)
-        }
-        
-        return summary, df_trades
-        
-        df_trades = pd.DataFrame(self.trades)
-        
-        winning_trades = df_trades[df_trades['pct_return'] > 0]
-        losing_trades = df_trades[df_trades['pct_return'] <= 0]
-        
-        summary = {
-            'total_trades': len(df_trades),
-            'winning_trades': len(winning_trades),
-            'losing_trades': len(losing_trades),
-            'win_rate': len(winning_trades) / len(df_trades) * 100 if len(df_trades) > 0 else 0,
-            'avg_return_pct': df_trades['pct_return'].mean(),
-            'avg_winning_return': winning_trades['pct_return'].mean() if len(winning_trades) > 0 else 0,
-            'avg_losing_return': losing_trades['pct_return'].mean() if len(losing_trades) > 0 else 0,
-            'total_return_pct': (self.capital - self.initial_capital) / self.initial_capital * 100,
-            'final_capital': self.capital,
-            'max_drawdown': self.calculate_max_drawdown(df_trades)
+            'max_drawdown': self.calculate_max_drawdown(df_trades),
+            'total_spread_cost': self.total_spread_cost,
+            'spread_pct_of_initial': (self.total_spread_cost / self.initial_capital) * 100,
+            'avg_spread_per_trade': df_trades['total_spread_cost'].mean() if len(df_trades) > 0 else 0
         }
         
         return summary, df_trades
@@ -573,6 +819,7 @@ class TradeSimulator:
         
         return drawdown.min()
 
+
 if __name__ == "__main__":
     data_path = "/Users/admin/FinAi/market_data/"
     tickers = get_symbols_from_folder(data_path)
@@ -582,7 +829,7 @@ if __name__ == "__main__":
     # Load model
     model_path = "/Users/admin/FinAi/"
     model = daily_check.load_model(model_path)
-    #tickers = ["UNP", "UPS", "COP", "MTCH", "DVN", "MGM", "MOS", "GPC", "DVA"]
+    #tickers = ["LRCX", "AAPL", "MOS", "MTCH"]
     
     # Portfolio tracking
     initial_capital = 10000
@@ -600,6 +847,7 @@ if __name__ == "__main__":
         # Skip if gains are ≤20%
         if not ticker_gains_map[ticker]:
             continue
+        
         print(f"\n{'='*60}")
         print(f"Processing {ticker}")
         print(f"{'='*60}\n")
@@ -630,7 +878,6 @@ if __name__ == "__main__":
             continue
 
         # Align prices with tr_labels
-        window_days = 60
         aligned_prices = df["Close"].iloc[-len(tr_labels):]
         if len(aligned_prices) != len(tr_labels):
             print(f"[Error] Label-price mismatch for {ticker}")
@@ -693,24 +940,38 @@ if __name__ == "__main__":
             plt.title(f"Price vs Smoothed Class Confidences ({n_classes} classes, window={window})")
             plt.tight_layout()
             plt.show()
-
+        
+        conf_th = 0.0
+        
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = directional_confidence_signals(
             pred_test,
             trend_window=3,
-            conf_th=0.8,
+            conf_th=conf_th,
         )
+        
+        conf_th = 0.5
+        buy_clusters_mask = find_high_confidence_clusters(confidences, pred_classes, target_class=2, 
+                                           conf_threshold=conf_th, min_cluster_size=2, 
+                                           last_n_growing=2, proximity_pct=0.90)
+        sell_clusters_mask = find_high_confidence_clusters(confidences, pred_classes, target_class=1, 
+                                           conf_threshold=conf_th, min_cluster_size=2, 
+                                           last_n_growing=2, proximity_pct=0.90)
 
         # Apply price filters
-        buy_mask = res['buy_mask'].copy()
-        sell_mask = res['sell_mask'].copy()
-
+        buy_mask = res['buy_mask'].copy() & buy_clusters_mask
+        sell_mask = res['sell_mask'].copy() & sell_clusters_mask
+        
         # 4. Use filtered masks
         buy_pred_idxs = np.where(buy_mask)[0]
         sell_pred_idxs = np.where(sell_mask)[0]
-        
+
+        # remove any predicted indices that exceed mask length
+        buy_pred_idxs = buy_pred_idxs[buy_pred_idxs < len(buy_mask)]
+        sell_pred_idxs = sell_pred_idxs[sell_pred_idxs < len(sell_mask)]
+
         # --- SIMULATE TRADES ---
-        simulator = TradeSimulator(initial_capital=initial_capital)
+        simulator = TradeSimulator(initial_capital=initial_capital, spread_pct=0.09)
         
         for i in range(len(prices_np)):
             # Check if we should exit an open position
@@ -861,24 +1122,71 @@ if __name__ == "__main__":
     print(f"\n   Final Capital: ${sequential_capital:,.2f}")
     print(f"   Overall Return: {sequential_return:.2f}%")
 
-    # Create a dictionary map with tickers as keys and boolean as values
+    # --------- FILTER & SAVE TICKER MAP based on multi-criteria ----------
+    # Criteria — adjust values here if you want different thresholds
+    MIN_RETURN_PCT = 10.0
+    MAX_DRAWDOWN_ALLOWED = -10.0   # interpreted as "max_drawdown must be >= 0.0"
+    MIN_WIN_RATE = 60.0          # in percent (e.g. 70.0 means 70%)
+    MIN_TOTAL_TRADES = 5
+
     ticker_gains_map = {}
+    ticker_info_list = []
+
     for ticker, results in portfolio_results.items():
-        total_return = results['total_return_pct']
-        ticker_gains_map[ticker] = total_return > 20.0
-    
-    
-    # Also create a structured numpy array for more efficient storage
-    ticker_gains_structured = np.array(
-        [(ticker, gains) for ticker, gains in ticker_gains_map.items()],
-        dtype=[('ticker', 'U10'), ('above_20pct', bool)]
-    )
-    
+        total_return_pct = float(results.get('total_return_pct', 0.0))
+        max_drawdown = float(results.get('max_drawdown', -999.0))   # expecting percent, negative numbers for drawdown
+        win_rate = float(results.get('win_rate', 0.0))
+        total_trades = int(results.get('total_trades', 0))
+
+        meets_criteria = (
+            (total_return_pct > MIN_RETURN_PCT) and
+            (max_drawdown >= MAX_DRAWDOWN_ALLOWED) and
+            (win_rate >= MIN_WIN_RATE) and
+            (total_trades >= MIN_TOTAL_TRADES)
+        )
+
+        ticker_gains_map[ticker] = meets_criteria
+        ticker_info_list.append((ticker, total_return_pct, max_drawdown, win_rate, total_trades, meets_criteria))
+
+    # Structured array dtype with extra numeric fields for inspection
+    dtype = [
+        ('ticker', 'U16'),
+        ('total_return_pct', 'f4'),
+        ('max_drawdown', 'f4'),
+        ('win_rate', 'f4'),
+        ('total_trades', 'i4'),
+        ('passed', '?')
+    ]
+    ticker_gains_structured = np.array(ticker_info_list, dtype=dtype)
+
+    # Save to disk (set to True to save)
     saveTickerMap = False
+    out_dir = "/Users/admin/FinAi"
+    os.makedirs(out_dir, exist_ok=True)
+    dict_path = os.path.join(out_dir, 'ticker_gains_map.npy')
+    struct_path = os.path.join(out_dir, 'ticker_gains_structured.npy')
+
     if saveTickerMap:
-        # Save as numpy file (dictionary)
-        np.save('ticker_gains_map.npy', ticker_gains_map)
-        np.save('ticker_gains_structured.npy', ticker_gains_structured)
+        # dictionary (use allow_pickle when loading)
+        np.save(dict_path, ticker_gains_map, allow_pickle=True)
+        # structured array (normal .npy)
+        np.save(struct_path, ticker_gains_structured)
+        print(f"Saved map -> {dict_path}")
+        print(f"Saved structured -> {struct_path}")
+
+    # PRINT SUMMARY (new)
+    print(f"\n{'='*60}")
+    print("TICKER GAINS FILTER (combined criteria)")
+    print(f"{'='*60}\n")
+    print(f"{'Ticker':<10} {'Return %':>9} {'MaxDD':>9} {'Win%':>8} {'Trades':>8} {'Passed':>8}")
+    print('-' * 60)
+    for rec in ticker_gains_structured:
+        print(f"{rec['ticker']:<10} {rec['total_return_pct']:9.2f} {rec['max_drawdown']:9.2f} {rec['win_rate']:8.2f} {rec['total_trades']:8d} {str(bool(rec['passed'])):>8}")
+
+    passed_count = sum(ticker_gains_map.values())
+    total_count = len(ticker_gains_map)
+    print(f"\nTickers passing criteria: {passed_count} / {total_count}")
+    print(f"Criteria: total_return > {MIN_RETURN_PCT}%, max_drawdown >= {MAX_DRAWDOWN_ALLOWED}%, win_rate >= {MIN_WIN_RATE}%, total_trades >= {MIN_TOTAL_TRADES}")
 
     
     print(f"\n{'='*60}")
@@ -895,14 +1203,4 @@ if __name__ == "__main__":
     print(f"  - ticker_gains_map.npy (dictionary)")
     print(f"  - ticker_gains_structured.npy (structured array)")
     
-    print(f"\nTickers with >20% gains: {sum(ticker_gains_map.values())}")
-    print(f"Tickers with ≤20% gains: {len(ticker_gains_map) - sum(ticker_gains_map.values())}")
-    
-    print(f"\nTo load:")
-    print(f"  map_dict = np.load('ticker_gains_map.npy', allow_pickle=True).item()")
-    print(f"  structured = np.load('ticker_gains_structured.npy')")
-    print(f"\nAccess examples:")
-    print(f"  map_dict['AAPL']  # Returns True/False")
-    print(f"  structured['ticker']  # Array of all tickers")
-    print(f"  structured['above_20pct']  # Array of all booleans")
     
