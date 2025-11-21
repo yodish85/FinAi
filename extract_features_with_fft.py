@@ -147,332 +147,6 @@ def plot_labels(df, buy_indices, sell_indices, price_col='Close', title=None, ma
     plt.grid(True)
     plt.show()
 
-def detect_local_extrema_labels(
-    prices,
-    gain_threshold=0.05,
-    time_threshold=10,
-    min_distance=1,
-    smooth=True,
-    ma_window=20,
-    plot=False
-):
-    """
-    Detects buy/sell signals based on local minima/maxima and future gain/drop within a time window.
-
-    - A local minimum is labeled as a BUY if price rises ≥ gain_threshold within time_threshold steps.
-    - A local maximum is labeled as a SELL if price drops ≥ gain_threshold within time_threshold steps.
-    """
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from scipy.signal import find_peaks
-
-    if prices is None or len(prices) == 0 or np.all(np.isnan(prices)):
-        print("Invalid price array.")
-        return [], []
-
-    prices = np.asarray(prices, dtype=np.float32)
-
-    if smooth and len(prices) >= ma_window:
-        prices = np.convolve(prices, np.ones(ma_window) / ma_window, mode='same')
-
-    # Detect local maxima and minima
-    peak_prominence = 0.005 * prices.max()
-    sell_idxs, _ = find_peaks(prices, distance=min_distance, prominence=peak_prominence)
-    buy_idxs, _ = find_peaks(-prices, distance=min_distance, prominence=peak_prominence)
-
-    # Plot BEFORE filtering
-    if plot:
-        plt.figure(figsize=(12, 6))
-        plt.plot(prices, label='Price')
-        plt.plot(buy_idxs, prices[buy_idxs], 'g^', label='Buy Candidates', markersize=10)
-        plt.plot(sell_idxs, prices[sell_idxs], 'rv', label='Sell Candidates', markersize=10)
-        plt.legend()
-        plt.title('Buy/Sell Points Before Filtering')
-        plt.grid(True)
-        plt.show()
-
-    filtered_buys = []
-    filtered_sells = []
-
-    # Evaluate buy candidates
-    for idx in buy_idxs:
-        end = min(idx + time_threshold + 1, len(prices))
-        future_window = prices[idx+1:end]
-        if len(future_window) == 0:
-            continue
-        future_gain = (future_window - prices[idx]) / prices[idx]
-        if np.any(future_gain >= gain_threshold):
-            filtered_buys.append(idx)
-
-    # Evaluate sell candidates
-    for idx in sell_idxs:
-        end = min(idx + time_threshold + 1, len(prices))
-        future_window = prices[idx+1:end]
-        if len(future_window) == 0:
-            continue
-        future_drop = (prices[idx] - future_window) / prices[idx]
-        if np.any(future_drop >= gain_threshold):
-            filtered_sells.append(idx)
-
-    # Plot AFTER filtering
-    if plot:
-        plt.figure(figsize=(12, 6))
-        plt.plot(prices, label="Price")
-        if filtered_buys:
-            plt.plot(filtered_buys, prices[filtered_buys], 'g^', label="Buy Signals", markersize=10)
-        if filtered_sells:
-            plt.plot(filtered_sells, prices[filtered_sells], 'rv', label="Sell Signals", markersize=10)
-        plt.title(f"Filtered Buy/Sell Signals (Gain ≥ {gain_threshold*100:.1f}%, within {time_threshold} steps)")
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-
-    return np.array(filtered_buys, dtype=int), np.array(filtered_sells, dtype=int)
-
-from scipy.signal import argrelextrema
-
-def find_extrema(
-    close,
-    order=5,
-    window_to_perform=30,
-    min_price_change=0.1,
-    plot=False
-):
-    """
-    Optimized extrema detection with relaxed global extrema sensitivity.
-    """
-    if isinstance(close, np.ndarray):
-        close = pd.Series(close)
-
-    close_values = close.values
-    length = len(close_values)
-
-    # Adjusted: Relaxed order to capture more extrema
-    relaxed_order = max(1, order // 2)
-
-    # Global extrema detection with relaxed order
-    buy_idxs = argrelextrema(close_values, np.less_equal, order=relaxed_order)[0]
-    sell_idxs = argrelextrema(close_values, np.greater_equal, order=relaxed_order)[0]
-
-    # Plot BEFORE filtering
-    if plot:
-        plt.figure(figsize=(12, 6))
-        plt.plot(close.index, close_values, label='Price')
-        plt.plot(close.index[buy_idxs], close_values[buy_idxs], 'g^', label='Buy Candidates', markersize=10)
-        plt.plot(close.index[sell_idxs], close_values[sell_idxs], 'rv', label='Sell Candidates', markersize=10)
-        plt.legend()
-        plt.title('Buy/Sell Points Before Filtering')
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-    # Filter extrema based on forward-looking price change
-    def filter_extrema(indices, is_minima):
-        result = []
-        for idx in indices:
-            end = min(length, idx + window_to_perform)
-            if end - idx < 2:
-                continue
-            future_window = close_values[idx:end]
-            if is_minima:
-                price_diff = (np.max(future_window) - close_values[idx]) / close_values[idx]
-                if price_diff >= min_price_change:
-                    result.append(idx)
-            else:
-                price_diff = (close_values[idx] - np.min(future_window)) / close_values[idx]
-                if price_diff >= min_price_change:
-                    result.append(idx)
-        return np.array(result, dtype=int)
-
-    better_buy_idxs = filter_extrema(buy_idxs, is_minima=True)
-    better_sell_idxs = filter_extrema(sell_idxs, is_minima=False)
-
-    # Plot AFTER filtering
-    if plot:
-        plt.figure(figsize=(14, 7), dpi=300)
-        plt.plot(close.index, close_values, label='Close Price', linewidth=2)
-        plt.plot(close.index[better_buy_idxs], close.iloc[better_buy_idxs], 'g^', label='Buy (Minima)', markersize=10)
-        plt.plot(close.index[better_sell_idxs], close.iloc[better_sell_idxs], 'rv', label='Sell (Maxima)', markersize=10)
-        plt.title("Filtered Local Extrema (Relaxed Order)")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-    return better_buy_idxs, better_sell_idxs
-
-def find_confirmed_local_extrema_independent(
-    close,
-    order=5,
-    min_price_change=0.01,
-    min_distance=5,
-    plot=False
-):
-    """
-    Identifies significant local minima (buy) and maxima (sell) independently.
-    Refines by selecting better (lower/higher) points within the forward window.
-
-    Parameters:
-        close (pd.Series or np.ndarray): Closing prices.
-        order (int): Points on each side for local extrema.
-        min_price_change (float): Required % diff between peak and neighbor min/max.
-        min_distance (int): Min index distance between same-type extrema.
-        plot (bool): Whether to display plots.
-
-    Returns:
-        (np.ndarray, np.ndarray): Buy (minima) and Sell (maxima) indices.
-    """
-    if isinstance(close, np.ndarray):
-        close = pd.Series(close)
-
-    close_values = close.values
-    local_min = argrelextrema(close_values, np.less_equal, order=order)[0]
-    local_max = argrelextrema(close_values, np.greater_equal, order=order)[0]
-
-    # Plot pre-filter extrema
-    if plot:
-        plt.figure(figsize=(14, 7), dpi=300)
-        plt.plot(close.index, close.values, label='Close Price', linewidth=1)
-        plt.plot(close.index[local_min], close.iloc[local_min], 'b^', label='Raw Minima', markersize=10)
-        plt.plot(close.index[local_max], close.iloc[local_max], 'mv', label='Raw Maxima', markersize=10)
-        plt.title("Raw Local Extrema (Before Filtering)")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-    # Refine extrema
-    buy_idxs = []
-    sell_idxs = []
-
-    for idx in local_min:
-        window_end = min(len(close_values), idx + order + 1)
-        window = close_values[idx:window_end]
-        if len(window) < 2:
-            continue
-        peak = close_values[idx]
-        neighbor_max = np.max(window)
-        pct_diff = (neighbor_max - peak) / neighbor_max
-        if pct_diff >= min_price_change:
-            better_idx_rel = np.argmin(window)
-            better_idx = idx + better_idx_rel
-            if not buy_idxs or (better_idx - buy_idxs[-1]) >= min_distance:
-                buy_idxs.append(better_idx)
-
-    for idx in local_max:
-        window_end = min(len(close_values), idx + order + 1)
-        window = close_values[idx:window_end]
-        if len(window) < 2:
-            continue
-        peak = close_values[idx]
-        neighbor_min = np.min(window)
-        pct_diff = (peak - neighbor_min) / neighbor_min
-        if pct_diff >= min_price_change:
-            better_idx_rel = np.argmax(window)
-            better_idx = idx + better_idx_rel
-            if not sell_idxs or (better_idx - sell_idxs[-1]) >= min_distance:
-                sell_idxs.append(better_idx)
-
-    # Plot post-filter extrema
-    if plot:
-        plt.figure(figsize=(14, 7), dpi=300)
-        plt.plot(close.index, close.values, label='Close Price', linewidth=1)
-        plt.plot(close.index[buy_idxs], close.iloc[buy_idxs], 'g^', label='Buy (Refined Minima)', markersize=10)
-        plt.plot(close.index[sell_idxs], close.iloc[sell_idxs], 'rv', label='Sell (Refined Maxima)', markersize=10)
-        plt.title("Refined Local Extrema (After Filtering)")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-    return np.array(buy_idxs, dtype=int), np.array(sell_idxs, dtype=int)
-
-def detect_labels_via_peaks(prices, gain_threshold=0.1,
-                            min_distance=1, smooth=True, ma_window=20,
-                            max_holding_period=30, plot=False):
-    """
-    Detect optimal buy/sell (or sell/buy) pairs based on:
-    - maximum gain,
-    - gain threshold,
-    - maximum holding period constraint.
-    """
-    if prices is None or len(prices) == 0 or np.all(np.isnan(prices)):
-        print("Error: Empty or NaN array passed to detect_labels_via_peaks.")
-        return [], []
-
-    prices = np.asarray(prices, dtype=np.float32)
-
-    if smooth and len(prices) >= ma_window:
-        prices = np.convolve(prices, np.ones(ma_window) / ma_window, mode='same')
-
-    # Step 1: Find all peaks
-    prominence = 0.005 * prices.max()
-    sell_idxs, _ = scipy.signal.find_peaks(prices, distance=min_distance, prominence=prominence)
-    buy_idxs, _ = scipy.signal.find_peaks(-prices, distance=min_distance, prominence=prominence)
-
-    if plot:
-        plt.figure(figsize=(14, 6))
-        plt.plot(prices, label='Price')
-        plt.plot(buy_idxs, prices[buy_idxs], 'g^', label='Buy', markersize=10)
-        plt.plot(sell_idxs, prices[sell_idxs], 'rv', label='Sell', markersize=10)
-        plt.title("Buy/Sell Points Before Filtering")
-        plt.legend()
-        plt.show()
-
-    # Step 2: Match peaks with best gain within holding window
-    used_idxs = set()
-    valid_buy_idxs = []
-    valid_sell_idxs = []
-
-    # Try best Buy → Sell (long)
-    for buy in buy_idxs:
-        candidates = [
-            sell for sell in sell_idxs
-            if buy < sell <= buy + max_holding_period and sell not in used_idxs
-        ]
-        if not candidates:
-            continue
-
-        gains = [(sell, (prices[sell] - prices[buy]) / prices[buy]) for sell in candidates]
-        best = max(gains, key=lambda x: x[1])
-
-        if best[1] >= gain_threshold:
-            valid_buy_idxs.append(buy)
-            valid_sell_idxs.append(best[0])
-            used_idxs.update({buy, best[0]})
-
-    # Try best Sell → Buy (short)
-    for sell in sell_idxs:
-        if sell in used_idxs:
-            continue
-        candidates = [
-            buy for buy in buy_idxs
-            if sell < buy <= sell + max_holding_period and buy not in used_idxs
-        ]
-        if not candidates:
-            continue
-
-        gains = [(buy, (prices[sell] - prices[buy]) / prices[sell]) for buy in candidates]
-        best = max(gains, key=lambda x: x[1])
-
-        if best[1] >= gain_threshold:
-            valid_sell_idxs.append(sell)
-            valid_buy_idxs.append(best[0])
-            used_idxs.update({sell, best[0]})
-
-    # Step 3: Plot filtered matches
-    if plot:
-        plt.figure(figsize=(14, 6))
-        plt.plot(prices, label='Price')
-        plt.plot(valid_buy_idxs, prices[valid_buy_idxs], 'g^', label='Valid Buy', markersize=10)
-        plt.plot(valid_sell_idxs, prices[valid_sell_idxs], 'rv', label='Valid Sell', markersize=10)
-        plt.title("Filtered Buy/Sell Points with Gain Threshold & Holding Period")
-        plt.legend()
-        plt.show()
-
-    return np.array(valid_buy_idxs, dtype=int), np.array(valid_sell_idxs, dtype=int)
-
 def expand_indices(peaks, tolerance):
     expanded = set()
     for idx in peaks:
@@ -538,6 +212,261 @@ def add_technical_indicators(df):
     df.dropna(inplace=True)
     return df
 
+def detect_and_plot_price_movements(prices, lookforward=5, up_threshold=0.10, down_threshold=-0.10, plot=True):
+    """
+    Detects future up/down movements by looking forward N days.
+    Labels are assigned if threshold is reached AT ANY POINT within the window.
+    
+    - Label 2 ("Buy"):  price will reach >= up_threshold ANYWHERE in next lookforward days
+    - Label 1 ("Sell"): price will reach <= down_threshold ANYWHERE in next lookforward days
+    - Label 0 ("Hold"): neither condition met within window
+    
+    If BOTH thresholds are hit within the window, the FIRST one reached is used.
+    
+    Parameters
+    ----------
+    prices : list or array
+        Price series.
+    lookforward : int
+        Number of days to look ahead (default 5).
+    up_threshold : float
+        Percent threshold for buy signal (default 0.10 = 10%).
+    down_threshold : float
+        Percent threshold for sell signal (default -0.10 = -10%).
+    plot : bool
+        Whether to show the plot.
+    
+    Returns
+    -------
+    dict with:
+        - labels: np.array of int (0=Hold, 1=Sell, 2=Buy)
+        - days_to_target: days until target reached (np.nan if not reached)
+        - peak_gain: maximum gain % reached in window
+        - max_loss: maximum loss % reached in window
+    """
+    prices = np.asarray(prices, dtype=float)
+    n = len(prices)
+    
+    if n < 2:
+        return {
+            'labels': np.array([], dtype=int),
+            'days_to_target': np.array([]),
+            'peak_gain': np.array([]),
+            'max_loss': np.array([])
+        }
+    
+    labels = np.zeros(n, dtype=int)
+    days_to_target = np.full(n, np.nan)
+    peak_gain = np.zeros(n)
+    max_loss = np.zeros(n)
+    
+    for i in range(n):
+        # Look forward up to lookforward days (or until end of data)
+        end_idx = min(i + lookforward + 1, n)
+        future_window = prices[i+1:end_idx]  # Exclude current price
+        
+        if len(future_window) == 0:
+            # Not enough future data, label as Hold
+            labels[i] = 0
+            continue
+        
+        # Calculate percent changes from current price to all future prices
+        pct_changes = (future_window - prices[i]) / prices[i]
+        
+        # Track peak gain and max loss in window
+        peak_gain[i] = np.max(pct_changes)
+        max_loss[i] = np.min(pct_changes)
+        
+        # Find first day each threshold is crossed
+        up_cross_days = np.where(pct_changes >= up_threshold)[0]
+        down_cross_days = np.where(pct_changes <= down_threshold)[0]
+        
+        first_up = up_cross_days[0] + 1 if len(up_cross_days) > 0 else np.inf
+        first_down = down_cross_days[0] + 1 if len(down_cross_days) > 0 else np.inf
+        
+        # Label based on which threshold is reached first
+        if first_up < first_down:
+            labels[i] = 2  # Buy signal (up target reached first)
+            days_to_target[i] = first_up
+        elif first_down < first_up:
+            labels[i] = 1  # Sell signal (down target reached first)
+            days_to_target[i] = first_down
+        else:
+            labels[i] = 0  # Hold (neither reached)
+    
+    # Optional plotting
+    if plot:
+        time = np.arange(len(prices))
+        fig = plt.figure(figsize=(16, 12))
+        
+        # Subplot 1: Price with signals
+        ax1 = plt.subplot(4, 1, 1)
+        ax1.plot(time, prices, label="Price", linewidth=2, color='black', alpha=0.7)
+        
+        # Plot Buy signals with color intensity based on days to target
+        buy_idxs = np.where(labels == 2)[0]
+        if len(buy_idxs) > 0:
+            # Color by speed: faster = darker green
+            buy_days = days_to_target[buy_idxs]
+            buy_colors = plt.cm.Greens(1 - (buy_days - 1) / lookforward)
+            ax1.scatter(buy_idxs, prices[buy_idxs], c=buy_colors, marker="^", 
+                       s=150, label=f"Buy (≥{up_threshold*100:.0f}% within {lookforward}d)", 
+                       zorder=3, edgecolors='darkgreen', linewidths=2)
+            
+            # Draw arrows showing when target is reached
+            for idx in buy_idxs[:10]:  # Limit to first 10 for clarity
+                target_day = int(idx + days_to_target[idx])
+                if target_day < len(prices):
+                    ax1.annotate('', xy=(target_day, prices[target_day]), 
+                               xytext=(idx, prices[idx]),
+                               arrowprops=dict(arrowstyle='->', color='green', 
+                                             alpha=0.3, linewidth=1.5))
+        
+        # Plot Sell signals
+        sell_idxs = np.where(labels == 1)[0]
+        if len(sell_idxs) > 0:
+            sell_days = days_to_target[sell_idxs]
+            sell_colors = plt.cm.Reds(1 - (sell_days - 1) / lookforward)
+            ax1.scatter(sell_idxs, prices[sell_idxs], c=sell_colors, marker="v", 
+                       s=150, label=f"Sell (≤{down_threshold*100:.0f}% within {lookforward}d)", 
+                       zorder=3, edgecolors='darkred', linewidths=2)
+            
+            for idx in sell_idxs[:10]:
+                target_day = int(idx + days_to_target[idx])
+                if target_day < len(prices):
+                    ax1.annotate('', xy=(target_day, prices[target_day]), 
+                               xytext=(idx, prices[idx]),
+                               arrowprops=dict(arrowstyle='->', color='red', 
+                                             alpha=0.3, linewidth=1.5))
+        
+        ax1.set_title(f"Price Movements with {lookforward}-Day Lookahead (Target Reached Anywhere in Window)", 
+                     fontsize=14, fontweight='bold')
+        ax1.set_ylabel("Price ($)")
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(loc='best', fontsize=10)
+        
+        # Subplot 2: Days to target histogram
+        ax2 = plt.subplot(4, 1, 2)
+        valid_days = days_to_target[~np.isnan(days_to_target)]
+        if len(valid_days) > 0:
+            buy_days_valid = days_to_target[buy_idxs]
+            sell_days_valid = days_to_target[sell_idxs]
+            
+            bins = np.arange(1, lookforward + 2) - 0.5
+            ax2.hist(buy_days_valid, bins=bins, alpha=0.6, color='green', 
+                    label=f'Buy signals (avg: {np.mean(buy_days_valid):.1f}d)', edgecolor='black')
+            ax2.hist(sell_days_valid, bins=bins, alpha=0.6, color='red', 
+                    label=f'Sell signals (avg: {np.mean(sell_days_valid):.1f}d)', edgecolor='black')
+            ax2.set_xlabel('Days Until Target Reached')
+            ax2.set_ylabel('Count')
+            ax2.set_title('Distribution of Days to Reach Target', fontsize=12, fontweight='bold')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3, axis='y')
+            ax2.set_xticks(range(1, lookforward + 1))
+        
+        # Subplot 3: Peak gains and max losses
+        ax3 = plt.subplot(4, 1, 3)
+        ax3.plot(time, peak_gain * 100, 'g-', alpha=0.6, linewidth=1.5, label='Peak Gain in Window')
+        ax3.plot(time, max_loss * 100, 'r-', alpha=0.6, linewidth=1.5, label='Max Loss in Window')
+        ax3.axhline(up_threshold * 100, color='green', linestyle='--', alpha=0.5, label='Buy Threshold')
+        ax3.axhline(down_threshold * 100, color='red', linestyle='--', alpha=0.5, label='Sell Threshold')
+        ax3.axhline(0, color='black', linestyle='-', alpha=0.3, linewidth=0.5)
+        ax3.set_ylabel('Return (%)')
+        ax3.set_title(f'Peak Returns Within {lookforward}-Day Window', fontsize=12)
+        ax3.legend(loc='best', fontsize=9)
+        ax3.grid(True, alpha=0.3)
+        
+        # Subplot 4: Label distribution
+        ax4 = plt.subplot(4, 1, 4)
+        label_counts = [np.sum(labels == 0), np.sum(labels == 1), np.sum(labels == 2)]
+        label_names = ['Hold', 'Sell', 'Buy']
+        colors = ['gray', 'red', 'green']
+        
+        bars = ax4.bar(label_names, label_counts, color=colors, alpha=0.7, 
+                      edgecolor='black', linewidth=1.5)
+        ax4.set_ylabel('Count')
+        ax4.set_title('Label Distribution', fontsize=12, fontweight='bold')
+        ax4.grid(True, alpha=0.3, axis='y')
+        
+        # Add counts and percentages on bars
+        for bar, count in zip(bars, label_counts):
+            height = bar.get_height()
+            ax4.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{int(count)}\n({count/len(labels)*100:.1f}%)',
+                    ha='center', va='bottom', fontweight='bold', fontsize=10)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print detailed statistics
+        print("\n" + "="*70)
+        print("LOOKAHEAD LABELING STATISTICS (TARGET REACHED ANYWHERE IN WINDOW)")
+        print("="*70)
+        print(f"Lookforward period: {lookforward} days")
+        print(f"Buy threshold:  ≥{up_threshold*100:+.1f}%")
+        print(f"Sell threshold: ≤{down_threshold*100:.1f}%")
+        
+        print(f"\n{'='*70}")
+        print("LABEL DISTRIBUTION:")
+        print(f"{'='*70}")
+        print(f"Total data points:  {len(labels):5d}")
+        print(f"Buy signals (2):    {label_counts[2]:5d} ({label_counts[2]/len(labels)*100:5.1f}%)")
+        print(f"Sell signals (1):   {label_counts[1]:5d} ({label_counts[1]/len(labels)*100:5.1f}%)")
+        print(f"Hold signals (0):   {label_counts[0]:5d} ({label_counts[0]/len(labels)*100:5.1f}%)")
+        
+        if len(buy_idxs) > 0:
+            print(f"\n{'='*70}")
+            print("BUY SIGNAL ANALYSIS:")
+            print(f"{'='*70}")
+            print(f"Average days to target:     {np.mean(days_to_target[buy_idxs]):.2f}")
+            print(f"Median days to target:      {np.median(days_to_target[buy_idxs]):.2f}")
+            print(f"Fastest target reached:     {np.min(days_to_target[buy_idxs]):.0f} day(s)")
+            print(f"Slowest target reached:     {np.max(days_to_target[buy_idxs]):.0f} day(s)")
+            print(f"Average peak gain:          {np.mean(peak_gain[buy_idxs])*100:.2f}%")
+            
+            # Days distribution
+            for day in range(1, lookforward + 1):
+                count = np.sum(days_to_target[buy_idxs] == day)
+                if count > 0:
+                    print(f"  Day {day}: {count:3d} signals ({count/len(buy_idxs)*100:5.1f}%)")
+        
+        if len(sell_idxs) > 0:
+            print(f"\n{'='*70}")
+            print("SELL SIGNAL ANALYSIS:")
+            print(f"{'='*70}")
+            print(f"Average days to target:     {np.mean(days_to_target[sell_idxs]):.2f}")
+            print(f"Median days to target:      {np.median(days_to_target[sell_idxs]):.2f}")
+            print(f"Fastest target reached:     {np.min(days_to_target[sell_idxs]):.0f} day(s)")
+            print(f"Slowest target reached:     {np.max(days_to_target[sell_idxs]):.0f} day(s)")
+            print(f"Average max loss:           {np.mean(max_loss[sell_idxs])*100:.2f}%")
+            
+            # Days distribution
+            for day in range(1, lookforward + 1):
+                count = np.sum(days_to_target[sell_idxs] == day)
+                if count > 0:
+                    print(f"  Day {day}: {count:3d} signals ({count/len(sell_idxs)*100:5.1f}%)")
+        
+        # Conflict analysis (both thresholds hit)
+        both_hit = (peak_gain >= up_threshold) & (max_loss <= down_threshold)
+        if np.any(both_hit):
+            print(f"\n{'='*70}")
+            print("CONFLICT ANALYSIS (Both thresholds hit in same window):")
+            print(f"{'='*70}")
+            print(f"Conflicts detected:         {np.sum(both_hit):5d} ({np.sum(both_hit)/len(labels)*100:5.1f}%)")
+            conflict_labels = labels[both_hit]
+            print(f"  Labeled as Buy:           {np.sum(conflict_labels == 2):5d}")
+            print(f"  Labeled as Sell:          {np.sum(conflict_labels == 1):5d}")
+            print("(Label determined by which threshold was reached FIRST)")
+        
+        print("="*70 + "\n")
+    
+    return {
+        'labels': labels,
+        'days_to_target': days_to_target,
+        'peak_gain': peak_gain,
+        'max_loss': max_loss
+    }
+
 import shutil
 
 def clear_folder(folder_path):
@@ -602,56 +531,12 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
         fft_indices = [df_clean.columns.get_loc(col) for col in fft_features_present]
         data_array = df_clean.to_numpy(dtype=np.float32)
 
-        df_tmp = df['Close'].values
+        df_tmp = df['Close'].values #TODO use adjusted close
         plot = False
-        """
-        # Also very poor performer
-        buy_peaks, sell_peaks = detect_labels_via_peaks(df_tmp,
-                                                        gain_threshold=0.2, 
-                                                        min_distance=10, 
-                                                        smooth=True, 
-                                                        ma_window=5, 
-                                                        max_holding_period=days,
-                                                        plot=plot)
-        
-        """
-        buy_peaks, sell_peaks = find_confirmed_local_extrema_independent(
-            df_tmp,
-            order=days,
-            min_price_change=0.2,
-            min_distance=1,
-            plot=plot)
-        
-        
-        """
-        buy_peaks, sell_peaks = find_extrema(
-            df_tmp,
-            order=days,
-            window_to_perform=30,
-            min_price_change=0.2,
-            plot=plot)
-        
-        """
-        """
-        # This labelling method gives the worst performance 
-        buy_peaks, sell_peaks = detect_local_extrema_labels(
-            df_tmp,
-            gain_threshold=0.1,
-            time_threshold=days,
-            min_distance=1,
-            smooth=True,
-            ma_window=5,
-            plot=plot
-            )
-        """
-        # expand indexes with a tolerance of 1
-        #buy_peaks = expand_indices(buy_peaks, tolerance=1)
-        #sell_peaks = expand_indices(sell_peaks, tolerance=1)
         #SELL-1 BUY-2
-        labels = np.zeros(len(df_tmp), dtype=np.uint8)
-        labels[sell_peaks] = 1
-        labels[buy_peaks] = 2
-
+        res = detect_and_plot_price_movements(df_tmp, plot=plot)
+        labels = res['labels']
+        
         for ti in range(days, len(df)):
             window = data_array[ti - days:ti]
             min_vals = np.nanmin(window, axis=0)
@@ -686,8 +571,8 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
             data_memmap[sample_index] = combined
             symbol_names_array[sample_index] = symbol
             
-            if ti + 1 < len(labels):
-                labels_memmap[sample_index] = labels[ti + 1]
+            if ti < len(labels):
+                labels_memmap[sample_index] = labels[ti]
                 sample_index += 1
             else:
                 sample_index += 1

@@ -154,26 +154,25 @@ if __name__ == "__main__":
         pred_test = model.predict(tr_data) # should have size 1
         assert pred_test.shape[0] == len(aligned_prices), "Prediction count mismatch with prices"
         
-        # --- Moving Average (50-day) ---
         prices_np = aligned_prices.to_numpy().ravel()   # ensures 1D
 
         confidences = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
         
-        conf_th = 0.8
+        conf_th = 0.0
         
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = comprehensive_validation.directional_confidence_signals(
             pred_test,
-            trend_window=2,
+            trend_window=3,
             conf_th=conf_th,
         )
         
         buy_clusters_mask = comprehensive_validation.find_high_confidence_clusters(confidences, pred_classes, target_class=2, 
-                                           conf_threshold=conf_th, min_cluster_size=5, 
+                                           conf_threshold=conf_th, min_cluster_size=2, 
                                            last_n_growing=2, proximity_pct=0.90)
         sell_clusters_mask = comprehensive_validation.find_high_confidence_clusters(confidences, pred_classes, target_class=1, 
-                                           conf_threshold=conf_th, min_cluster_size=5, 
+                                           conf_threshold=conf_th, min_cluster_size=2, 
                                            last_n_growing=2, proximity_pct=0.90)
 
         # Apply price filters

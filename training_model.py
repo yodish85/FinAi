@@ -27,7 +27,7 @@ from sklearn.utils.class_weight import compute_class_weight
 import json
 from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
-
+import comprehensive_validation
 import tensorflow as tf
 
 print(tf.__version__)
@@ -195,12 +195,12 @@ def build_model(input_shape, num_classes=3):
     inputs = tf.keras.Input(shape=input_shape)
     
     # Residual Conv block
-    x = residual_conv_block(inputs, filters=4, kernel_size=16)
+    x = residual_conv_block(inputs, filters=32, kernel_size=16)
 
     # BiLSTM
     x = tf.keras.layers.Bidirectional(
-        tf.keras.layers.LSTM(16, return_sequences=False, dropout=0.4, recurrent_dropout=0.4,
-             kernel_regularizer=tf.keras.regularizers.l2(0.03))
+        tf.keras.layers.LSTM(16, return_sequences=False, dropout=0.3, recurrent_dropout=0.2,
+             kernel_regularizer=tf.keras.regularizers.l2(1e-3))
     )(x)
     x = tf.keras.layers.BatchNormalization()(x)
 
@@ -280,7 +280,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     filtered_test_labels = test_labels[val_shuffle_idx]
     
     # --- Dataset construction ---
-    batch_size = 32
+    batch_size = 12
     
     train_ds = tf.data.Dataset.from_tensor_slices((filtered_train_data, filtered_train_labels)) \
         .shuffle(buffer_size=len(train_data)) \
@@ -297,7 +297,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     validation_steps = len(test_data) // batch_size
     
     # --- Model setup ---
-    num_classes = 2
+    num_classes = 3
     input_shape = filtered_train_data.shape[1:]
     
     # Compute class weights
@@ -329,13 +329,13 @@ def train_model(train_data, train_labels, test_data, test_labels):
     model.compile(optimizer=optimizer, loss=loss_fn, metrics=['accuracy'])
     
     # --- Callbacks ---
-    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=50, restore_best_weights=True)
+    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
     
     # --- Train ---
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=100,
+        epochs=300,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=[early_stop]
@@ -378,7 +378,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     plt.show()
 
     # Probability plot
-    plt.plot(pred_test[:,0], label='Predicted Buy')
+    plt.plot(pred_test[:,2], label='Predicted Buy')
     plt.plot(pred_test[:,1], label='Predicted Sell')
     plt.legend()
     plt.title("Probability of hold/buy/sell")
@@ -558,10 +558,10 @@ def load_datasets(directory):
     """
     Load the latest train/test data and labels from the directory.
     """
-    train_data_path = find_latest_file(directory, "train", "data", "binary")
-    train_labels_path = find_latest_file(directory, "train", "labels", "binary")
-    test_data_path = find_latest_file(directory, "test", "data", "binary")
-    test_labels_path = find_latest_file(directory, "test", "labels", "binary")
+    train_data_path = find_latest_file(directory, "train", "data", "balanced")
+    train_labels_path = find_latest_file(directory, "train", "labels", "balanced")
+    test_data_path = find_latest_file(directory, "test", "data", "balanced")
+    test_labels_path = find_latest_file(directory, "test", "labels", "balanced")
     
     # Assuming files are in .npy format; change as needed
     train_data = np.load(train_data_path, mmap_mode='r')
@@ -571,10 +571,8 @@ def load_datasets(directory):
 
     print(f"Loaded:\n  Train Data: {train_data_path}\n  Train Labels: {train_labels_path}")
     print(f"  Test Data: {test_data_path}\n  Test Labels: {test_labels_path}")
-    train_labels = train_labels - 1
-    test_labels = test_labels - 1
-    train_labels = tf.keras.utils.to_categorical(train_labels, num_classes=2)
-    test_labels = tf.keras.utils.to_categorical(test_labels, num_classes=2)
+    train_labels = tf.keras.utils.to_categorical(train_labels, num_classes=3)
+    test_labels = tf.keras.utils.to_categorical(test_labels, num_classes=3)
 
     return train_data, train_labels, test_data, test_labels
 
@@ -607,30 +605,30 @@ def get_symbols_from_folder(base_dir):
         
 if __name__ == "__main__":
     
-    loadData = True
+    loadData = False
     loadModel = False
     days_to_process = []
 
     if not loadData:
         # training data
-        directory = '/Users/admin/FinAi/market_data/train'
+        directory = '/Users/admin/FinAi/market_data/'
         files = os.listdir(directory)
         # Get tickers from training
         train_symbols = get_symbols_from_folder(directory)
-        
+        train_symbols = comprehensive_validation.filter_sp500_tickers(train_symbols)
         train_data, train_labels, train_symbols =  \
             extract_features_with_fft.extract_features_with_fft(train_symbols, directory, True, 'train', days_to_process)
         
         # validation data
-        directory = '/Users/admin/FinAi/market_data/validation'
+        directory = '/Users/admin/FinAi/data_old/djia'
         # Get tickers from validation directory
         val_symbols   = get_symbols_from_folder(directory)
-
         extract_features_with_fft.extract_features_with_fft(val_symbols, directory, True, 'test', days_to_process)
         
         # And load data
         directory = "/Users/admin/FinAi/train-val-data"
         train_data, train_labels, test_data, test_labels = load_datasets(directory)
+        
     else:
         # or just load data
         directory = "/Users/admin/FinAi/train-val-data"

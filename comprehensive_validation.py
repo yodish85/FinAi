@@ -198,12 +198,12 @@ def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
         c2_is_trough = c2_t <= np.min(c2_win)
         
         # BUY: class2 peak and (class1 AND class0 trough)
-        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th  and c1_t <= 0.001:
+        if c2_is_peak and c1_is_trough and c0_is_trough and c2_t >= conf_th:
             buy_mask[t] = True
             buy_strength[t] = c2_t - np.min(c2_win)
         
         # SELL: class1 peak and (class2 AND class0 trough)
-        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th and c2_t <= 0.001:
+        if c1_is_peak and c2_is_trough and c0_is_trough and c1_t >= conf_th:
             sell_mask[t] = True
             sell_strength[t] = c1_t - np.min(c1_win)
     
@@ -829,7 +829,7 @@ if __name__ == "__main__":
     # Load model
     model_path = "/Users/admin/FinAi/"
     model = daily_check.load_model(model_path)
-    #tickers = ["LRCX"]
+    #tickers = ["LRCX", "AAPL", "MOS", "MTCH"]
     
     # Portfolio tracking
     initial_capital = 10000
@@ -878,7 +878,6 @@ if __name__ == "__main__":
             continue
 
         # Align prices with tr_labels
-        window_days = 60
         aligned_prices = df["Close"].iloc[-len(tr_labels):]
         if len(aligned_prices) != len(tr_labels):
             print(f"[Error] Label-price mismatch for {ticker}")
@@ -942,15 +941,16 @@ if __name__ == "__main__":
             plt.tight_layout()
             plt.show()
         
-        conf_th = 0.8
+        conf_th = 0.0
         
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = directional_confidence_signals(
             pred_test,
-            trend_window=2,
+            trend_window=3,
             conf_th=conf_th,
         )
         
+        conf_th = 0.5
         buy_clusters_mask = find_high_confidence_clusters(confidences, pred_classes, target_class=2, 
                                            conf_threshold=conf_th, min_cluster_size=2, 
                                            last_n_growing=2, proximity_pct=0.90)
@@ -961,11 +961,11 @@ if __name__ == "__main__":
         # Apply price filters
         buy_mask = res['buy_mask'].copy() & buy_clusters_mask
         sell_mask = res['sell_mask'].copy() & sell_clusters_mask
-
+        
         # 4. Use filtered masks
         buy_pred_idxs = np.where(buy_mask)[0]
         sell_pred_idxs = np.where(sell_mask)[0]
-        
+
         # remove any predicted indices that exceed mask length
         buy_pred_idxs = buy_pred_idxs[buy_pred_idxs < len(buy_mask)]
         sell_pred_idxs = sell_pred_idxs[sell_pred_idxs < len(sell_mask)]
