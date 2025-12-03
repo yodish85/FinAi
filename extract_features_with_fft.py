@@ -182,12 +182,16 @@ def add_technical_indicators(df):
     df.ta.atr(length=14, append=True)
     df.rename(columns={'ATRr_14': 'ATR_14'}, inplace=True)
 
-    # 🔼 NEW INDICATORS
-    
+    # Other indicators
     df.ta.stoch(k=14, d=3, append=True)
     df.ta.willr(length=14, append=True)
     df.ta.cci(length=20, append=True)
-    df.ta.obv(append=True)
+    
+    # FIXED: Rolling OBV instead of cumulative
+    obv_change = np.where(df['Close'] > df['Close'].shift(1), df['Volume'],
+                 np.where(df['Close'] < df['Close'].shift(1), -df['Volume'], 0))
+    df['OBV_20'] = pd.Series(obv_change, index=df.index).rolling(window=20).sum()
+    
     df.ta.cmf(length=20, append=True)
     df.ta.adx(append=True)
 
@@ -195,16 +199,22 @@ def add_technical_indicators(df):
     df['LogRet'] = np.log(df['Close'] / df['Close'].shift(1))
     df['Volatility_20'] = df['LogRet'].rolling(window=20).std() * np.sqrt(252)
 
-    # 🔼 TIME-SERIES FEATURES
+    # Time-series features
     df['zscore_20'] = (df['Close'] - df['Close'].rolling(20).mean()) / df['Close'].rolling(20).std()
     df['skew_20'] = df['Close'].rolling(window=20).skew()
     df['kurt_20'] = df['Close'].rolling(window=20).kurt()
     df.ta.roc(length=10, append=True)
     
-    # ✅ Derived price features
+    # Derived price features
     df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
-    df['VWAP'] = (df['Typical_Price'] * df['Volume']).cumsum() / df['Volume'].cumsum()
-    df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
+    
+    # FIXED: Rolling VWAP instead of cumulative
+    vwap_window = 20
+    df['VWAP'] = (
+        (df['Typical_Price'] * df['Volume']).rolling(window=vwap_window).sum() / 
+        df['Volume'].rolling(window=vwap_window).sum()
+    )
+    
     df['HL2'] = (df['High'] + df['Low']) / 2
     df['OHLC4'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     
@@ -590,7 +600,7 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
     
     return raw_data_path, raw_label_path, symbol_path
 
-MIN_ROWS_REQUIRED = 30
+MIN_ROWS_REQUIRED = 60
 def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_process, doBalance=True):
     
     dataframes_list = get_df_list(symbol_list, directory)

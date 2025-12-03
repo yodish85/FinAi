@@ -329,7 +329,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     model.compile(optimizer=optimizer, loss=loss_fn, metrics=['accuracy'])
     
     # --- Callbacks ---
-    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=100, restore_best_weights=True)
     
     # --- Train ---
     history = model.fit(
@@ -605,7 +605,7 @@ def get_symbols_from_folder(base_dir):
         
 if __name__ == "__main__":
     
-    loadData = False
+    loadData = True
     loadModel = False
     days_to_process = []
 

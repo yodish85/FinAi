@@ -106,7 +106,7 @@ if __name__ == "__main__":
     ticker_gains_map = np.load('/Users/admin/FinAi/ticker_gains_map.npy', allow_pickle=True).item()
     
     for i, ticker in enumerate(all_symbols, start=1):
-        
+        '''
         # Skip if ticker not in map
         if ticker not in ticker_gains_map:
             print(f"Skipping {ticker} - not in gains map")
@@ -115,7 +115,7 @@ if __name__ == "__main__":
         # Skip if gains are ≤20%
         if not ticker_gains_map[ticker]:
             continue
-        
+        '''
         print(f"Processing {i}/{len(all_symbols)}: {ticker}")
         
         # Fetch latest data
@@ -159,7 +159,7 @@ if __name__ == "__main__":
         confidences = np.max(pred_test, axis=1)
         pred_classes = np.argmax(pred_test, axis=1)
         
-        conf_th = 0.0
+        conf_th = 0.5
         
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = comprehensive_validation.directional_confidence_signals(
@@ -176,8 +176,8 @@ if __name__ == "__main__":
                                            last_n_growing=2, proximity_pct=0.90)
 
         # Apply price filters
-        buy_mask = res['buy_mask'].copy() & buy_clusters_mask
-        sell_mask = res['sell_mask'].copy() & sell_clusters_mask
+        buy_mask = res['buy_mask'].copy() #& buy_clusters_mask
+        sell_mask = res['sell_mask'].copy() #& sell_clusters_mask
         
         # Only populate if the LAST element is True
         buy_pred_idxs = np.array([len(buy_mask) - 1]) if buy_mask[-1] else np.array([])
