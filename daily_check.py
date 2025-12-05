@@ -106,16 +106,7 @@ if __name__ == "__main__":
     ticker_gains_map = np.load('/Users/admin/FinAi/ticker_gains_map.npy', allow_pickle=True).item()
     
     for i, ticker in enumerate(all_symbols, start=1):
-        '''
-        # Skip if ticker not in map
-        if ticker not in ticker_gains_map:
-            print(f"Skipping {ticker} - not in gains map")
-            continue
-        
-        # Skip if gains are ≤20%
-        if not ticker_gains_map[ticker]:
-            continue
-        '''
+
         print(f"Processing {i}/{len(all_symbols)}: {ticker}")
         
         # Fetch latest data
