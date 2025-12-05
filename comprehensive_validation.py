@@ -829,7 +829,7 @@ if __name__ == "__main__":
     # Load model
     model_path = "/Users/admin/FinAi/"
     model = daily_check.load_model(model_path)
-    #tickers = ["LRCX", "AAPL", "MOS", "MTCH"]
+    tickers = [ "MTCH"]
     
     # Portfolio tracking
     initial_capital = 10000
@@ -838,16 +838,7 @@ if __name__ == "__main__":
     ticker_gains_map = np.load('/Users/admin/FinAi/ticker_gains_map.npy', allow_pickle=True).item()
     
     for ticker in tickers:
-        
-        # Skip if ticker not in map
-        if ticker not in ticker_gains_map:
-            print(f"Skipping {ticker} - not in gains map")
-            continue
-        
-        # Skip if gains are ≤20%
-        if not ticker_gains_map[ticker]:
-            continue
-        
+
         print(f"\n{'='*60}")
         print(f"Processing {ticker}")
         print(f"{'='*60}\n")
@@ -857,7 +848,7 @@ if __name__ == "__main__":
         fetcher = StockFetcher(base_path=data_path)
         fetcher.fetch_and_save([ticker], data_path)
 
-        days_to_process = 1001
+        days_to_process = 260
         doBalance = False
 
         result = extract_features_with_fft.extract_features_with_fft(
@@ -941,7 +932,7 @@ if __name__ == "__main__":
             plt.tight_layout()
             plt.show()
         
-        conf_th = 0.0
+        conf_th = 0.5
         
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = directional_confidence_signals(
@@ -959,8 +950,8 @@ if __name__ == "__main__":
                                            last_n_growing=2, proximity_pct=0.90)
 
         # Apply price filters
-        buy_mask = res['buy_mask'].copy() & buy_clusters_mask
-        sell_mask = res['sell_mask'].copy() & sell_clusters_mask
+        buy_mask = res['buy_mask'].copy() #& buy_clusters_mask
+        sell_mask = res['sell_mask'].copy() #& sell_clusters_mask
         
         # 4. Use filtered masks
         buy_pred_idxs = np.where(buy_mask)[0]
