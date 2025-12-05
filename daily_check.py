@@ -102,8 +102,6 @@ if __name__ == "__main__":
     # Load model
     model = load_model('/Users/admin/FinAi/')
     #all_symbols = ["STX", "TTD", "ALEX", "SNV", "MOS"]
-
-    ticker_gains_map = np.load('/Users/admin/FinAi/ticker_gains_map.npy', allow_pickle=True).item()
     
     for i, ticker in enumerate(all_symbols, start=1):
 

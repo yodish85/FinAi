@@ -834,9 +834,7 @@ if __name__ == "__main__":
     # Portfolio tracking
     initial_capital = 10000
     portfolio_results = {}
-    
-    ticker_gains_map = np.load('/Users/admin/FinAi/ticker_gains_map.npy', allow_pickle=True).item()
-    
+        
     for ticker in tickers:
 
         print(f"\n{'='*60}")
@@ -848,7 +846,7 @@ if __name__ == "__main__":
         fetcher = StockFetcher(base_path=data_path)
         fetcher.fetch_and_save([ticker], data_path)
 
-        days_to_process = 260
+        days_to_process = 1001
         doBalance = False
 
         result = extract_features_with_fft.extract_features_with_fft(
