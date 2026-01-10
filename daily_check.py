@@ -42,14 +42,17 @@ def load_model(path):
     print(f"Loaded model from: {latest_model}")
     return model
 
-def plot_ticker_probs(tickers, probs, title, color, savepath=None):
+def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue", savepath=None):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
     tickers = np.array(tickers)
     probs = np.array([
-    float(p[0]) if isinstance(p, (list, np.ndarray)) else 
-    float(p.iloc[0]) if isinstance(p, pd.Series) else 
-    float(p)
-    for p in probs
-])
+        float(p[0]) if isinstance(p, (list, np.ndarray)) else 
+        float(p.iloc[0]) if isinstance(p, pd.Series) else 
+        float(p)
+        for p in probs
+    ])
 
     if len(tickers) != len(probs):
         raise ValueError(f"Length mismatch: {len(tickers)} tickers vs {len(probs)} probs")
@@ -59,29 +62,49 @@ def plot_ticker_probs(tickers, probs, title, color, savepath=None):
     sorted_tickers = tickers[sorted_idx]
     sorted_probs = probs[sorted_idx]
 
+    if close_prices is not None:
+        close_prices = np.array(close_prices)[sorted_idx]
+
     # Plot
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(max(10, len(tickers)*0.3), 6))
     bars = ax.bar(range(len(sorted_tickers)), sorted_probs, color=color)
     ax.set_xticks(range(len(sorted_tickers)))
     ax.set_xticklabels(sorted_tickers, rotation=90)
     ax.set_title(title)
     ax.set_ylabel("Probability")
+    ax.set_ylim(0, max(sorted_probs)*1.15)  # ensure space above bars
 
-    # Add labels on top
-    for bar, prob in zip(bars, sorted_probs):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                f"{prob:.2f}", ha="center", va="bottom", fontsize=8)
+    # Add labels above bars
+    for i, bar in enumerate(bars):
+        prob = sorted_probs[i]
+        if close_prices is not None:
+            close = close_prices[i]
+            label = f"{prob:.2f}\n${close:.2f}"
+        else:
+            label = f"{prob:.2f}"
+
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.01,  # slightly above the bar
+            label,
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            clip_on=False  # important! prevents clipping
+        )
 
     fig.tight_layout()
     plt.show()
     if savepath:
         fig.savefig(savepath, bbox_inches="tight", dpi=200)
         plt.close(fig)
+
+
      
 if __name__ == "__main__":
     
     data_path = "/Users/admin/FinAi/market_data"
-    days_to_process = 1001 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
+    days_to_process = 300 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
     # use 1001; it complies with the validation and gives best results
     doBalance = False
 
@@ -98,7 +121,9 @@ if __name__ == "__main__":
     sell_tickers_list = []
     buy_probs_list = []
     buy_tickers_list = []
-
+    sell_close_prices_list = []
+    buy_close_prices_list = []
+    
     # Load model
     model = load_model('/Users/admin/FinAi/')
     #all_symbols = ["STX", "TTD", "ALEX", "SNV", "MOS"]
@@ -157,34 +182,31 @@ if __name__ == "__main__":
             conf_th=conf_th,
         )
         
-        buy_clusters_mask = comprehensive_validation.find_high_confidence_clusters(confidences, pred_classes, target_class=2, 
-                                           conf_threshold=conf_th, min_cluster_size=2, 
-                                           last_n_growing=2, proximity_pct=0.90)
-        sell_clusters_mask = comprehensive_validation.find_high_confidence_clusters(confidences, pred_classes, target_class=1, 
-                                           conf_threshold=conf_th, min_cluster_size=2, 
-                                           last_n_growing=2, proximity_pct=0.90)
-
         # Apply price filters
-        buy_mask = res['buy_mask'].copy() #& buy_clusters_mask
-        sell_mask = res['sell_mask'].copy() #& sell_clusters_mask
+        buy_mask = res['buy_mask'].copy()
+        sell_mask = res['sell_mask'].copy()
         
         # Only populate if the LAST element is True
         buy_pred_idxs = np.array([len(buy_mask) - 1]) if buy_mask[-1] else np.array([])
         sell_pred_idxs = np.array([len(sell_mask) - 1]) if sell_mask[-1] else np.array([])
+        # After fetching aligned_prices for this ticker
+        last_close = float(aligned_prices.iloc[-1])
         
+        # Append it to a list
         # Retain only the last sell signal
         if sell_pred_idxs.size > 0:
             best_idx = sell_pred_idxs[-1]
             sell_probs_list.append(confidences[best_idx])
             sell_tickers_list.append(ticker)
-        
+            sell_close_prices_list.append(last_close)  # for sell predictions
+
         # Retain only the last buy signal
         if buy_pred_idxs.size > 0:
             best_idx = buy_pred_idxs[-1]
             buy_probs_list.append(confidences[best_idx])
             buy_tickers_list.append(ticker)
+            buy_close_prices_list.append(last_close)   # for buy predictions
 
-    
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -193,19 +215,20 @@ if __name__ == "__main__":
     
     # Plot Buy predictions
     plot_ticker_probs(
-        buy_tickers_list[:max_tickers],
-        buy_probs_list[:max_tickers],
-        "Buy Predictions",
+        tickers=buy_tickers_list[:max_tickers],
+        probs=buy_probs_list[:max_tickers],
+        close_prices=buy_close_prices_list[:max_tickers],
+        title="Buy Predictions",
         color="green",
         savepath=f"predictions/buy_predictions_{timestamp}.png"
     )
-    
-    # Plot Sell predictions
+
+    # Example: assuming aligned_prices contains latest close for each ticker
     plot_ticker_probs(
-        sell_tickers_list[:max_tickers],
-        sell_probs_list[:max_tickers],
-        "Sell Predictions",
+        tickers=sell_tickers_list[:max_tickers],
+        probs=sell_probs_list[:max_tickers],
+        close_prices=sell_close_prices_list[:max_tickers],
+        title="Sell Predictions",
         color="red",
         savepath=f"predictions/sell_predictions_{timestamp}.png"
-    )
-            
+    )   
