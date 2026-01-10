@@ -84,27 +84,40 @@ def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue",
         limit_prices = None
 
     # Plot
-    fig, ax = plt.subplots(figsize=(max(10, len(tickers)*0.3), 6))
+    fig, ax = plt.subplots(figsize=(max(10, len(tickers) * 0.35), 6))
     bars = ax.bar(range(len(sorted_tickers)), sorted_probs, color=color)
+
     ax.set_xticks(range(len(sorted_tickers)))
     ax.set_xticklabels(sorted_tickers, rotation=90)
     ax.set_title(title)
     ax.set_ylabel("Probability")
-    ax.set_ylim(0, max(sorted_probs)*1.25)  # add more space for labels
 
-    # Add labels above bars
+    # Dynamic y-limit (space for labels)
+    y_max = max(sorted_probs)
+    ax.set_ylim(0, y_max * 1.4)
+
+    # Add labels above bars (non-overlapping)
+    # Dynamic y-limit (large headroom)
+    # Expand y-limit to allow two label rows
+    y_max = max(sorted_probs)
+    ax.set_ylim(0, y_max * 1.6)
+    
     for i, bar in enumerate(bars):
         prob = sorted_probs[i]
+    
         if sorted_closes is not None:
             close = sorted_closes[i]
             limit = limit_prices[i]
             label = f"{prob:.2f}\n${close:.2f}\n${limit:.2f}"
         else:
             label = f"{prob:.2f}"
-
+    
+        # Alternate label height (THIS is the key)
+        y_offset = 0.03 if i % 2 == 0 else 0.18
+    
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.01,  # slightly above the bar
+            bar.get_height() + y_offset,
             label,
             ha="center",
             va="bottom",
@@ -112,11 +125,13 @@ def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue",
             clip_on=False
         )
 
+
     fig.tight_layout()
-    plt.show()
-    if savepath:
-        fig.savefig(savepath, bbox_inches="tight", dpi=200)
+    plt.show() 
+    if savepath: 
+        fig.savefig(savepath, bbox_inches="tight", dpi=200) 
         plt.close(fig)
+
 
      
 if __name__ == "__main__":
