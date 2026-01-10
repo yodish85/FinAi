@@ -159,7 +159,8 @@ if __name__ == "__main__":
     
     # Load model
     model = load_model('/Users/admin/FinAi/')
-    #all_symbols = ["STX", "TTD", "ALEX", "SNV", "MOS"]
+    #all_symbols = ["PWR", "CAT", "SMCI", "COIN", "FTV", "MCHP"]
+    
     
     for i, ticker in enumerate(all_symbols, start=1):
 
@@ -226,8 +227,8 @@ if __name__ == "__main__":
         last_close = float(aligned_prices.iloc[-1])
         
         # Only consider signals where mask is True AND confidence >= conf_th
-        buy_pred_idxs = np.where(buy_mask & (buy_conf >= conf_th))[0]
-        sell_pred_idxs = np.where(sell_mask & (sell_conf >= conf_th))[0]
+        buy_pred_idxs = np.where(buy_mask[-1] & (buy_conf >= conf_th))[0]
+        sell_pred_idxs = np.where(sell_mask[-1] & (sell_conf >= conf_th))[0]
         
         # Append the last valid sell signal, if any
         if sell_pred_idxs.size > 0:
