@@ -42,9 +42,10 @@ def load_model(path):
     print(f"Loaded model from: {latest_model}")
     return model
 
-def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue", savepath=None):
+def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue", side="buy", savepath=None):
     import matplotlib.pyplot as plt
     import numpy as np
+    import pandas as pd
 
     tickers = np.array(tickers)
     probs = np.array([
@@ -54,16 +55,33 @@ def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue",
         for p in probs
     ])
 
+    if close_prices is not None:
+        close_prices = np.array([float(c) for c in close_prices])
+
     if len(tickers) != len(probs):
         raise ValueError(f"Length mismatch: {len(tickers)} tickers vs {len(probs)} probs")
+    if close_prices is not None and len(close_prices) != len(tickers):
+        raise ValueError(f"Length mismatch: {len(tickers)} tickers vs {len(close_prices)} close_prices")
 
     # Sort ascending by probability
     sorted_idx = np.argsort(probs)
     sorted_tickers = tickers[sorted_idx]
     sorted_probs = probs[sorted_idx]
-
     if close_prices is not None:
-        close_prices = np.array(close_prices)[sorted_idx]
+        sorted_closes = close_prices[sorted_idx]
+    else:
+        sorted_closes = None
+
+    # Compute limit prices
+    if sorted_closes is not None:
+        if side.lower() == "buy":
+            limit_prices = sorted_closes * 1.005  # +0.5% for buy
+        elif side.lower() == "sell":
+            limit_prices = sorted_closes * 0.995  # -0.5% for sell
+        else:
+            raise ValueError("side must be 'buy' or 'sell'")
+    else:
+        limit_prices = None
 
     # Plot
     fig, ax = plt.subplots(figsize=(max(10, len(tickers)*0.3), 6))
@@ -72,14 +90,15 @@ def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue",
     ax.set_xticklabels(sorted_tickers, rotation=90)
     ax.set_title(title)
     ax.set_ylabel("Probability")
-    ax.set_ylim(0, max(sorted_probs)*1.15)  # ensure space above bars
+    ax.set_ylim(0, max(sorted_probs)*1.25)  # add more space for labels
 
     # Add labels above bars
     for i, bar in enumerate(bars):
         prob = sorted_probs[i]
-        if close_prices is not None:
-            close = close_prices[i]
-            label = f"{prob:.2f}\n${close:.2f}"
+        if sorted_closes is not None:
+            close = sorted_closes[i]
+            limit = limit_prices[i]
+            label = f"{prob:.2f}\n${close:.2f}\n${limit:.2f}"
         else:
             label = f"{prob:.2f}"
 
@@ -90,7 +109,7 @@ def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue",
             ha="center",
             va="bottom",
             fontsize=8,
-            clip_on=False  # important! prevents clipping
+            clip_on=False
         )
 
     fig.tight_layout()
@@ -98,7 +117,6 @@ def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue",
     if savepath:
         fig.savefig(savepath, bbox_inches="tight", dpi=200)
         plt.close(fig)
-
 
      
 if __name__ == "__main__":
@@ -171,6 +189,9 @@ if __name__ == "__main__":
         prices_np = aligned_prices.to_numpy().ravel()   # ensures 1D
 
         confidences = np.max(pred_test, axis=1)
+        buy_conf = pred_test[:, 2]
+        sell_conf = pred_test[:, 1]
+
         pred_classes = np.argmax(pred_test, axis=1)
         
         conf_th = 0.5
@@ -186,26 +207,27 @@ if __name__ == "__main__":
         buy_mask = res['buy_mask'].copy()
         sell_mask = res['sell_mask'].copy()
         
-        # Only populate if the LAST element is True
-        buy_pred_idxs = np.array([len(buy_mask) - 1]) if buy_mask[-1] else np.array([])
-        sell_pred_idxs = np.array([len(sell_mask) - 1]) if sell_mask[-1] else np.array([])
-        # After fetching aligned_prices for this ticker
+        # Ensure last_close is float
         last_close = float(aligned_prices.iloc[-1])
         
-        # Append it to a list
-        # Retain only the last sell signal
+        # Only consider signals where mask is True AND confidence >= conf_th
+        buy_pred_idxs = np.where(buy_mask & (buy_conf >= conf_th))[0]
+        sell_pred_idxs = np.where(sell_mask & (sell_conf >= conf_th))[0]
+        
+        # Append the last valid sell signal, if any
         if sell_pred_idxs.size > 0:
-            best_idx = sell_pred_idxs[-1]
-            sell_probs_list.append(confidences[best_idx])
+            last_sell_idx = sell_pred_idxs[-1]
+            sell_probs_list.append(sell_conf[last_sell_idx])
             sell_tickers_list.append(ticker)
-            sell_close_prices_list.append(last_close)  # for sell predictions
-
-        # Retain only the last buy signal
+            sell_close_prices_list.append(last_close)  # Close price reference
+        
+        # Append the last valid buy signal, if any
         if buy_pred_idxs.size > 0:
-            best_idx = buy_pred_idxs[-1]
-            buy_probs_list.append(confidences[best_idx])
+            last_buy_idx = buy_pred_idxs[-1]
+            buy_probs_list.append(buy_conf[last_buy_idx])
             buy_tickers_list.append(ticker)
-            buy_close_prices_list.append(last_close)   # for buy predictions
+            buy_close_prices_list.append(last_close)   # Close price reference
+
 
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -220,6 +242,7 @@ if __name__ == "__main__":
         close_prices=buy_close_prices_list[:max_tickers],
         title="Buy Predictions",
         color="green",
+        side="buy",
         savepath=f"predictions/buy_predictions_{timestamp}.png"
     )
 
@@ -230,5 +253,6 @@ if __name__ == "__main__":
         close_prices=sell_close_prices_list[:max_tickers],
         title="Sell Predictions",
         color="red",
+        side="sell",
         savepath=f"predictions/sell_predictions_{timestamp}.png"
     )   
