@@ -67,6 +67,10 @@ def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue",
     sorted_idx = np.argsort(probs)
     sorted_tickers = tickers[sorted_idx]
     sorted_probs = probs[sorted_idx]
+    if len(sorted_probs) == 0:
+        print(f"[INFO] No data to plot: {title}")
+        return
+
     if close_prices is not None:
         sorted_closes = close_prices[sorted_idx]
     else:

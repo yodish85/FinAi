@@ -31,6 +31,9 @@ importlib.reload(training_model)
 import daily_check
 importlib.reload(daily_check)
 
+import confirm_trend
+importlib.reload(confirm_trend)
+
 from StockFetcher import StockFetcher
 from training_model import get_symbols_from_folder
 
@@ -58,7 +61,7 @@ class TradeSimulator:
     self,
     initial_capital=10000,
     spread_pct=0.09,
-    hold_days=5,
+    hold_days=10,
     take_profit_pct=0.10,
     stop_loss_pct=0.05,
     slippage_pct=0.10,        # NEW: max slippage in %
@@ -370,8 +373,8 @@ def run_backtest_corrected(ticker, close_prices, open_prices, dates,
     simulator = TradeSimulator(
         initial_capital=initial_capital,
         spread_pct=0.09,
-        hold_days=5,
-        take_profit_pct=0.10,
+        hold_days=10,
+        take_profit_pct=0.1,
         stop_loss_pct=0.05
     )
     
@@ -557,8 +560,8 @@ def filter_sp500_tickers(tickers):
     sp500 = set(get_sp500_tickers())
     return [t for t in tickers if t in sp500]
 
-def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
-                                   smooth_window=2, window_offset=0):
+def directional_confidence_signals(pred_test, trend_window=5, conf_th=0.0,
+                                   smooth_window=3, window_offset=0):
     """Generate directional signals from predictions."""
     pred_test = np.asarray(pred_test)
     n = pred_test.shape[0]
@@ -599,6 +602,245 @@ def directional_confidence_signals(pred_test, trend_window=3, conf_th=0.0,
     }
 
 
+def analyze_trade_exits(trades_df):
+    """
+    Analyze why trades are exiting and their performance.
+    """
+    if trades_df.empty:
+        print("No trades to analyze")
+        return
+    
+    print("\n" + "="*70)
+    print("TRADE EXIT ANALYSIS")
+    print("="*70)
+    
+    # Exit reason breakdown
+    exit_reasons = trades_df['exit_reason'].value_counts()
+    print("\n📊 Exit Reasons:")
+    for reason, count in exit_reasons.items():
+        pct = count / len(trades_df) * 100
+        print(f"   {reason:15s}: {count:3d} trades ({pct:5.1f}%)")
+    
+    # Performance by exit reason
+    print("\n💰 Average Return by Exit Reason:")
+    for reason in exit_reasons.index:
+        reason_trades = trades_df[trades_df['exit_reason'] == reason]
+        avg_return = reason_trades['pct_return'].mean()
+        win_rate = (reason_trades['pct_return'] > 0).sum() / len(reason_trades) * 100
+        print(f"   {reason:15s}: {avg_return:+7.2f}% avg return, {win_rate:.1f}% win rate")
+    
+    # Days held analysis
+    print("\n⏱️  Days Held Analysis:")
+    print(f"   Average: {trades_df['days_held'].mean():.1f} days")
+    print(f"   Median:  {trades_df['days_held'].median():.1f} days")
+    print(f"   Min/Max: {trades_df['days_held'].min():.0f} / {trades_df['days_held'].max():.0f} days")
+    
+    # Winners vs losers
+    winners = trades_df[trades_df['pct_return'] > 0]
+    losers = trades_df[trades_df['pct_return'] <= 0]
+    
+    print("\n🎯 Winners vs Losers:")
+    print(f"   Winners: {len(winners):3d} trades, avg return: {winners['pct_return'].mean():+.2f}%")
+    print(f"   Losers:  {len(losers):3d} trades, avg return: {losers['pct_return'].mean():+.2f}%")
+    print(f"   Win rate: {len(winners)/len(trades_df)*100:.1f}%")
+    
+    # The critical insight: What if we held longer?
+    time_limit_trades = trades_df[trades_df['exit_reason'] == 'time_limit']
+    if len(time_limit_trades) > 0:
+        tl_winners = time_limit_trades[time_limit_trades['pct_return'] > 0]
+        tl_losers = time_limit_trades[time_limit_trades['pct_return'] <= 0]
+        
+        print("\n⚠️  TIME LIMIT Trades (hit 5-day hold limit):")
+        print(f"   Total: {len(time_limit_trades)}")
+        print(f"   Winners: {len(tl_winners)} (avg: {tl_winners['pct_return'].mean():+.2f}%)")
+        print(f"   Losers: {len(tl_losers)} (avg: {tl_losers['pct_return'].mean():+.2f}%)")
+        
+        # How many time-limit losers are small losses?
+        small_losers = tl_losers[tl_losers['pct_return'] > -2]  # Less than 2% loss
+        if len(small_losers) > 0:
+            print(f"\n   ⚡ INSIGHT: {len(small_losers)} time-limit exits with <2% loss")
+            print(f"      These might have recovered if held longer!")
+    
+    # Stop loss analysis
+    stop_loss_trades = trades_df[trades_df['exit_reason'] == 'stop_loss']
+    if len(stop_loss_trades) > 0:
+        print("\n🛑 STOP LOSS Trades:")
+        print(f"   Total: {len(stop_loss_trades)}")
+        print(f"   Avg loss: {stop_loss_trades['pct_return'].mean():.2f}%")
+        print(f"   These are PROTECTING you - they hit the 5% stop")
+    
+    # Take profit analysis
+    take_profit_trades = trades_df[trades_df['exit_reason'] == 'take_profit']
+    if len(take_profit_trades) > 0:
+        print("\n✅ TAKE PROFIT Trades:")
+        print(f"   Total: {len(take_profit_trades)}")
+        print(f"   Avg gain: {take_profit_trades['pct_return'].mean():.2f}%")
+        print(f"   These hit your 10% target - good trades!")
+    
+    return {
+        'exit_reasons': exit_reasons,
+        'winners': winners,
+        'losers': losers,
+        'time_limit_trades': time_limit_trades,
+        'stop_loss_trades': stop_loss_trades,
+        'take_profit_trades': take_profit_trades
+    }
+
+
+def suggest_improvements(trades_df):
+    """
+    Suggest specific improvements based on trade data.
+    """
+    print("\n" + "="*70)
+    print("💡 SUGGESTED IMPROVEMENTS")
+    print("="*70)
+    
+    analysis = analyze_trade_exits(trades_df)
+    
+    suggestions = []
+    
+    # Check if too many time limit exits
+    time_limit_pct = (trades_df['exit_reason'] == 'time_limit').sum() / len(trades_df) * 100
+    if time_limit_pct > 50:
+        avg_tl_return = trades_df[trades_df['exit_reason'] == 'time_limit']['pct_return'].mean()
+        suggestions.append({
+            'priority': 'HIGH',
+            'issue': f'{time_limit_pct:.0f}% of trades hit time limit',
+            'recommendation': f'Increase hold_days' if avg_tl_return > 0 else 'Keep current hold period'
+        })
+    
+    # Check if stop loss is too tight
+    stop_loss_pct = (trades_df['exit_reason'] == 'stop_loss').sum() / len(trades_df) * 100
+    if stop_loss_pct > 30:
+        suggestions.append({
+            'priority': 'HIGH',
+            'issue': f'{stop_loss_pct:.0f}% of trades hit stop loss',
+            'recommendation': 'Your stop loss might be too tight.'
+        })
+    
+    # Check if take profit is too high
+    take_profit_pct = (trades_df['exit_reason'] == 'take_profit').sum() / len(trades_df) * 100
+    if take_profit_pct < 10:
+        suggestions.append({
+            'priority': 'MEDIUM',
+            'issue': f'Only {take_profit_pct:.0f}% of trades hit take profit',
+            'recommendation': 'Lower take profit to lock in more winners'
+        })
+    
+    # Check win rate
+    win_rate = (trades_df['pct_return'] > 0).sum() / len(trades_df) * 100
+    if win_rate < 50:
+        suggestions.append({
+            'priority': 'HIGH',
+            'issue': f'Win rate is {win_rate:.1f}% (below 50%)',
+            'recommendation': 'Add stricter filters OR widen stops to avoid whipsaws'
+        })
+    
+    # Check profit factor
+    total_wins = trades_df[trades_df['pct_return'] > 0]['profit'].sum()
+    total_losses = abs(trades_df[trades_df['pct_return'] <= 0]['profit'].sum())
+    if total_losses > 0:
+        profit_factor = total_wins / total_losses
+        if profit_factor < 1.5:
+            suggestions.append({
+                'priority': 'MEDIUM',
+                'issue': f'Profit factor is {profit_factor:.2f} (should be >1.5)',
+                'recommendation': 'Either improve win rate OR increase avg win / decrease avg loss'
+            })
+    
+    # Print suggestions
+    if suggestions:
+        print("\n🔧 Specific Action Items:\n")
+        for i, sug in enumerate(suggestions, 1):
+            print(f"{i}. [{sug['priority']}] {sug['issue']}")
+            print(f"   → {sug['recommendation']}\n")
+    else:
+        print("\n✅ Your position management looks reasonable!")
+    
+    return suggestions
+
+
+def plot_trade_distribution(trades_df):
+    """
+    Visualize trade return distribution.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # Plot 1: Return distribution
+    ax1 = axes[0, 0]
+    returns = trades_df['pct_return']
+    ax1.hist(returns, bins=30, edgecolor='black', alpha=0.7)
+    ax1.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Break-even')
+    ax1.axvline(x=returns.mean(), color='green', linestyle='--', linewidth=2, label=f'Mean: {returns.mean():.2f}%')
+    ax1.set_xlabel('Return (%)')
+    ax1.set_ylabel('Number of Trades')
+    ax1.set_title('Trade Return Distribution')
+    ax1.legend()
+    ax1.grid(alpha=0.3)
+    
+    # Plot 2: Exit reasons
+    ax2 = axes[0, 1]
+    exit_counts = trades_df['exit_reason'].value_counts()
+    colors = {'take_profit': 'green', 'stop_loss': 'red', 'time_limit': 'orange', 'end_of_data': 'gray'}
+    bar_colors = [colors.get(reason, 'blue') for reason in exit_counts.index]
+    ax2.bar(range(len(exit_counts)), exit_counts.values, color=bar_colors, edgecolor='black')
+    ax2.set_xticks(range(len(exit_counts)))
+    ax2.set_xticklabels(exit_counts.index, rotation=45, ha='right')
+    ax2.set_ylabel('Number of Trades')
+    ax2.set_title('Exit Reasons')
+    ax2.grid(alpha=0.3)
+    
+    # Plot 3: Returns by exit reason
+    ax3 = axes[1, 0]
+    exit_reasons = trades_df['exit_reason'].unique()
+    avg_returns = [trades_df[trades_df['exit_reason'] == reason]['pct_return'].mean() 
+                   for reason in exit_reasons]
+    bar_colors = ['green' if r > 0 else 'red' for r in avg_returns]
+    ax3.bar(range(len(exit_reasons)), avg_returns, color=bar_colors, edgecolor='black', alpha=0.7)
+    ax3.set_xticks(range(len(exit_reasons)))
+    ax3.set_xticklabels(exit_reasons, rotation=45, ha='right')
+    ax3.axhline(y=0, color='black', linestyle='-', linewidth=1)
+    ax3.set_ylabel('Average Return (%)')
+    ax3.set_title('Average Return by Exit Reason')
+    ax3.grid(alpha=0.3)
+    
+    # Plot 4: Days held vs return
+    ax4 = axes[1, 1]
+    colors = ['green' if r > 0 else 'red' for r in trades_df['pct_return']]
+    ax4.scatter(trades_df['days_held'], trades_df['pct_return'], c=colors, alpha=0.6, edgecolors='black')
+    ax4.axhline(y=0, color='black', linestyle='-', linewidth=1)
+    ax4.set_xlabel('Days Held')
+    ax4.set_ylabel('Return (%)')
+    ax4.set_title('Days Held vs Return')
+    ax4.grid(alpha=0.3)
+    
+    plt.tight_layout()
+    return fig
+
+
+# =====================================================================
+# HOW TO USE IN YOUR BACKTEST
+# =====================================================================
+
+"""
+ADD THIS TO YOUR MAIN BACKTEST LOOP, AFTER GETTING trades_df:
+
+    # Get results
+    summary, trades_df = simulator.get_performance_summary()
+    
+    # ADD THESE LINES:
+    analysis_results = analyze_trade_exits(trades_df)
+    suggestions = suggest_improvements(trades_df)
+    
+    # Optionally plot
+    if len(trades_df) > 10:
+        fig = plot_trade_distribution(trades_df)
+        plt.show()
+    
+    # Continue with your existing plotting...
+
+This will tell you EXACTLY what's wrong with your position management.
+"""
 # =====================================================================
 # MAIN EXECUTION
 # =====================================================================
@@ -621,11 +863,11 @@ if __name__ == "__main__":
     model = daily_check.load_model(model_path)
     
     # Test on specific tickers
-    #tickers = ["AMD", "REGN", "TKO", "XYZ", "EMR", "SLTD"]
+    #tickers = ["TROW", "HPQ", "SMCI", "PYPL", "TPL", "DVA"]
     
     portfolio_results = {}
     
-    for ticker in tickers:
+    for ticker in tickers[0:10]:
         print(f"\n{'='*60}")
         print(f"Processing {ticker}")
         print(f"{'='*60}\n")
@@ -668,6 +910,24 @@ if __name__ == "__main__":
         # Generate signals
         conf_th = 0.7
         res = directional_confidence_signals(pred_test, trend_window=3, conf_th=conf_th)
+        
+        aligned_close = df["Close"].iloc[-len(tr_labels):]
+        aligned_open = df["Open"].iloc[-len(tr_labels):]
+        aligned_volume = df["Volume"].iloc[-len(tr_labels):]  # ADD THIS
+        
+        # APPLY FILTERS HERE
+        filter_results = confirm_trend.apply_trend_filters(
+            buy_mask=res['buy_mask'],
+            sell_mask=res['sell_mask'],
+            close_prices=aligned_close.to_numpy(),
+            volumes=aligned_volume.to_numpy(),
+            **confirm_trend.get_filter_preset('aggressive')
+        )
+        
+        # Use filtered signals
+        #buy_mask = filter_results['buy_mask']
+        #sell_mask = filter_results['sell_mask']
+        
         buy_mask = res['buy_mask']
         sell_mask = res['sell_mask']
         
@@ -684,6 +944,15 @@ if __name__ == "__main__":
         
         # Get results
         summary, trades_df = simulator.get_performance_summary()
+        '''
+        analysis_results = analyze_trade_exits(trades_df)
+        suggestions = suggest_improvements(trades_df)
+        
+        # Optionally plot
+        if len(trades_df) > 1:
+            fig = plot_trade_distribution(trades_df)
+            plt.show()
+        '''    
         portfolio_results[ticker] = summary
         
         # Verify timing
