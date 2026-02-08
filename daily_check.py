@@ -137,7 +137,7 @@ def plot_ticker_probs(tickers, probs, close_prices=None, title="", color="blue",
 if __name__ == "__main__":
     
     data_path = "/Users/admin/FinAi/market_data"
-    days_to_process = 300 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
+    days_to_process = 301 # need at least 200 days to compute the moving avg + 60 to compute the last day's prediction
     # use 1001; it complies with the validation and gives best results
     doBalance = False
 
@@ -210,7 +210,7 @@ if __name__ == "__main__":
 
         pred_classes = np.argmax(pred_test, axis=1)
         
-        conf_th = 0.5
+        conf_th = 0.85
         
         # Basic: use raw confidences, 3-day rising window, default classes (buy_class=2,sell_class=1)
         res = comprehensive_validation.directional_confidence_signals(

@@ -490,8 +490,20 @@ def clear_folder(folder_path):
         except Exception as e:
             print(f"Failed to delete {file_path}. Reason: {e}")
 
-def process_windows(processed_dfs, days, name="run", symbol_names=None):
-    fft_features = ['Close', 'High', 'Low', 'Volume', 'Typical_Price', 'VWAP', 'HL2', 'OHLC4', 'MA20']
+def process_windows(processed_dfs, days, name="run", symbol_names=None,
+                    lookback_period=252, eps=1e-8,
+                    use_fft=False, use_wavelets=False):
+    """
+    PROPERLY SCALED normalization - all features have similar ranges.
+    
+    All features normalized to approximately [-5, +5] range:
+    - Prices: z-score (NOT percentage, for consistent scaling)
+    - Volume: log + z-score
+    - Indicators: z-score
+    
+    This ensures the model attends to all features equally.
+    """
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     subdir = "daily_data/" if name == "daily" else ""
@@ -509,10 +521,20 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
         print("No valid dataframes with enough samples")
         return
 
-    dummy_sample = first_df.drop(columns=['Date'], errors='ignore').to_numpy(dtype=np.float32)
-    input_dim = dummy_sample.shape[1]
-    fft_features_present = [f for f in fft_features if f in first_df.columns]
-    feature_dim = input_dim + 3 * len(fft_features_present)
+    base_cols = first_df.drop(columns=['Date'], errors='ignore').columns.tolist()
+    input_dim = len(base_cols)
+
+    fft_features = ['Close', 'High', 'Low', 'Volume', 'Typical_Price', 'VWAP', 'HL2', 'OHLC4', 'MA20']
+    fft_features_present = [f for f in fft_features if f in base_cols]
+    fft_dim = len(fft_features_present)
+
+    extra_dim = 0
+    if use_fft:
+        extra_dim += 2 * fft_dim
+    if use_wavelets:
+        extra_dim += fft_dim
+
+    feature_dim = input_dim + extra_dim
 
     data_memmap = np.lib.format.open_memmap(
         raw_data_path, dtype='float32', mode='w+', shape=(total_samples, days, feature_dim)
@@ -522,6 +544,9 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
     )
     symbol_names_array = np.empty(total_samples, dtype=object)
     sample_index = 0
+
+    price_features = ['Close', 'High', 'Low', 'Open', 'Typical_Price', 'VWAP', 'HL2', 'OHLC4']
+    volume_features = ['Volume']
 
     for idx, df in tqdm(enumerate(processed_dfs), total=len(processed_dfs), desc="Processing symbols"):
         if 'Close' not in df.columns:
@@ -535,70 +560,138 @@ def process_windows(processed_dfs, days, name="run", symbol_names=None):
         if df_clean.empty or len(df_clean) <= days:
             continue
 
-        if not all(f in df_clean.columns for f in fft_features_present):
-            continue
-
-        fft_indices = [df_clean.columns.get_loc(col) for col in fft_features_present]
+        cols = df_clean.columns.tolist()
         data_array = df_clean.to_numpy(dtype=np.float32)
 
-        df_tmp = df['Close'].values #TODO use adjusted close
-        plot = False
-        #SELL-1 BUY-2
-        res = detect_and_plot_price_movements(df_tmp, plot=plot)
+        price_indices = [cols.index(c) for c in cols if c in price_features]
+        volume_indices = [cols.index(c) for c in cols if c in volume_features]
+        other_indices = [i for i in range(len(cols))
+                         if i not in price_indices and i not in volume_indices]
+
+        fft_indices = [cols.index(c) for c in fft_features_present if c in cols]
+
+        df_tmp = df['Close'].values
+        res = detect_and_plot_price_movements(df_tmp, plot=False)
         labels = res['labels']
-        
+
         for ti in range(days, len(df)):
-            window = data_array[ti - days:ti]
-            min_vals = np.nanmin(window, axis=0)
-            max_vals = np.nanmax(window, axis=0)
-            denom = np.where((max_vals - min_vals) == 0, 1, max_vals - min_vals)
-            window_norm = (window - min_vals) / denom
-            window_norm = np.nan_to_num(window_norm, nan=0.0)
+            window = data_array[ti - days:ti].copy()
+            hist_start = max(0, ti - lookback_period)
+            hist_data = data_array[hist_start:ti]
 
-            fft_input = window_norm[:, fft_indices]
-            fft_data = np.fft.fft(fft_input, axis=0)
-            fft_mag = np.abs(fft_data)
-            fft_phase = np.angle(fft_data)
-            fft_mag_norm = (fft_mag - fft_mag.min()) / (fft_mag.max() - fft_mag.min() + 1e-8)
-            fft_phase_norm = (fft_phase - fft_phase.min()) / (fft_phase.max() - fft_phase.min() + 1e-8)
+            window_norm = np.zeros_like(window, dtype=np.float32)
 
-            wavelet_features = []
-            for col in range(fft_input.shape[1]):
-                swt_coeffs = pywt.swt(fft_input[:, col], 'db1', level=1)
-                cA = swt_coeffs[0][0]
-                wavelet_features.append(cA)
-            wavelet_array = np.stack(wavelet_features, axis=-1)
-            wavelet_array = (wavelet_array - wavelet_array.min()) / (wavelet_array.max() - wavelet_array.min() + 1e-8)
+            # ===============================================================
+            # ALL FEATURES: Consistent z-score normalization
+            # ===============================================================
+            # Range: All approximately [-5, +5] with same clipping
+            # This ensures model treats all features with equal importance
+            
+            # PRICES: Simple z-score
+            for j in price_indices:
+                hist_mean = np.mean(hist_data[:, j])
+                hist_std = np.std(hist_data[:, j]) + eps
+                
+                z_score = (window[:, j] - hist_mean) / hist_std
+                window_norm[:, j] = np.clip(z_score, -5.0, 5.0)
 
-            pad_len = days - wavelet_array.shape[0]
-            if pad_len > 0:
-                wavelet_array = np.pad(wavelet_array, ((0, pad_len), (0, 0)), mode='constant')
+            # VOLUME: Log transform then z-score (handles skewness)
+            for j in volume_indices:
+                log_w = np.log1p(window[:, j])
+                hist_log = np.log1p(hist_data[:, j])
+                
+                mean = np.mean(hist_log)
+                std = np.std(hist_log) + eps
+                
+                z_score = (log_w - mean) / std
+                window_norm[:, j] = np.clip(z_score, -5.0, 5.0)
 
-            combined = np.concatenate([window_norm, fft_mag_norm, fft_phase_norm, wavelet_array], axis=1)
+            # INDICATORS: Standard z-score
+            for j in other_indices:
+                mean = np.mean(hist_data[:, j])
+                std = np.std(hist_data[:, j]) + eps
+                
+                z_score = (window[:, j] - mean) / std
+                window_norm[:, j] = np.clip(z_score, -5.0, 5.0)
+
+            feats = [window_norm]
+
+            # -------- FFT (optional) --------
+            if use_fft:
+                fft_input = window[:, fft_indices]
+                fft_vals = np.fft.fft(fft_input, axis=0)
+                fft_mag = safe_minmax_norm(np.abs(fft_vals))
+                fft_phase = safe_minmax_norm(np.angle(fft_vals))
+                feats.extend([fft_mag, fft_phase])
+
+            # -------- Wavelets (optional) --------
+            if use_wavelets:
+                import pywt
+                wavelet_features = []
+                for col in range(len(fft_indices)):
+                    try:
+                        cA = pywt.swt(window[:, fft_indices[col]], 'db1', level=1)[0][0]
+                        wavelet_features.append(cA)
+                    except:
+                        wavelet_features.append(np.zeros(days))
+                wavelet_arr = safe_minmax_norm(np.stack(wavelet_features, axis=-1))
+                feats.append(wavelet_arr)
+
+            combined = np.concatenate(feats, axis=1)
+            combined = np.nan_to_num(combined, nan=0.0, posinf=0.0, neginf=0.0)
+
             if combined.shape != (days, feature_dim):
                 continue
 
             data_memmap[sample_index] = combined
             symbol_names_array[sample_index] = symbol
-            
+
             if ti < len(labels):
                 labels_memmap[sample_index] = labels[ti]
-                sample_index += 1
             else:
-                sample_index += 1
-                continue  # prevent IndexError if ti+1 is out of bounds
+                continue
 
+            sample_index += 1
 
-        del df, df_clean, data_array, df_tmp, labels
+        del df, df_clean, data_array, labels
         gc.collect()
-    
+
     np.save(symbol_path, symbol_names_array[:sample_index])
-    print(f"Saved raw data: {sample_index} samples")
-    print(f" - Features: {raw_data_path}")
-    print(f" - Labels: {raw_label_path}")
-    print(f" - Symbols: {symbol_path}")
-    
-    return raw_data_path, raw_label_path, symbol_path
+
+    print(f"\n{'='*60}")
+    print(f"Processing complete: {sample_index} samples saved")
+    print(f"Normalization: BALANCED z-score (all features [-5, +5])")
+    print(f"  - Prices: z-score")
+    print(f"  - Volume: log + z-score")
+    print(f"  - Others: z-score")
+    print(f"FFT enabled: {use_fft}")
+    print(f"Wavelets enabled: {use_wavelets}")
+    print(f"{'='*60}")
+    print(f"Features: {raw_data_path}")
+    print(f"Labels:   {raw_label_path}")
+    print(f"Symbols:  {symbol_path}")
+    print(f"{'='*60}\n")
+
+    return (raw_data_path, raw_label_path, symbol_path)
+
+
+def safe_minmax_norm(array):
+    """Safe min-max normalization to [0, 1]"""
+    min_val = np.min(array)
+    max_val = np.max(array)
+    if max_val - min_val < 1e-8:
+        return np.zeros_like(array)
+    return (array - min_val) / (max_val - min_val)
+
+
+def clear_folder(folder_path):
+    """Clear all files in folder"""
+    import os
+    import shutil
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path)
+    os.makedirs(folder_path, exist_ok=True)
+
 
 MIN_ROWS_REQUIRED = 60
 def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_process, doBalance=True):
@@ -630,15 +723,16 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         df["dollar_volume_pct"] = df["dollar_volume"].pct_change().fillna(0)
 
         # Add temporal features
-        df = add_temporal_features(df)
+        #df = add_temporal_features(df)
 
         # Add technical indicators (MA, Bollinger, MACD)
+        '''
         try:
             df = add_technical_indicators(df)
         except Exception as e:
             print(f"[SKIP] {symbol}: error during indicator processing: {e}")
             continue
-        
+        '''
         # Add advanced features
         #df = advanced_indicators.add_advanced_features(df)
         
