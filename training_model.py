@@ -171,52 +171,52 @@ class Attention(tf.keras.layers.Layer):
         return context_vector
 
 # Residual Conv block
-def residual_conv_block(x, filters=16, kernel_size=5, dropout_rate=0.3):
+def residual_conv_block(x, filters, kernel_size):
+    """Residual convolutional block with proper BatchNorm placement"""
     shortcut = x
-    x = tf.keras.layers.Conv1D(filters, kernel_size, padding='same', activation='relu',
-               kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
+    
+    # First conv
+    x = tf.keras.layers.Conv1D(filters, kernel_size, padding='same')(x)
     x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.Conv1D(filters, kernel_size, padding='same',
-               kernel_regularizer=tf.keras.regularizers.l2(0.001))(x)
+    x = tf.keras.layers.Activation('relu')(x)
+    
+    # Second conv
+    x = tf.keras.layers.Conv1D(filters, kernel_size, padding='same')(x)
     x = tf.keras.layers.BatchNormalization()(x)
     
-    # Ensure shapes match for residual connection
+    # Residual connection
     if shortcut.shape[-1] != filters:
         shortcut = tf.keras.layers.Conv1D(filters, 1, padding='same')(shortcut)
     
     x = tf.keras.layers.Add()([x, shortcut])
     x = tf.keras.layers.Activation('relu')(x)
-    x = tf.keras.layers.MaxPooling1D(pool_size=2)(x)
-    x = tf.keras.layers.Dropout(dropout_rate)(x)
+    x = tf.keras.layers.Dropout(0.2)(x)
+    
     return x
 
-# Model builder
 def build_model(input_shape, num_classes=3):
     inputs = tf.keras.Input(shape=input_shape)
+    x = tf.keras.layers.LayerNormalization()(inputs)
     
-    # Residual Conv block
-    x = residual_conv_block(inputs, filters=32, kernel_size=16)
-
-    # BiLSTM
-    x = tf.keras.layers.Bidirectional(
-        tf.keras.layers.LSTM(16, return_sequences=False, dropout=0.3, recurrent_dropout=0.2,
-             kernel_regularizer=tf.keras.regularizers.l2(1e-3))
-    )(x)
+    # CNN for pattern extraction
+    x = tf.keras.layers.Conv1D(64, 5, padding='same', activation='relu')(x)
     x = tf.keras.layers.BatchNormalization()(x)
-
-    # Attention
-    #x = Attention()(x)
-
-    # Dense layers
-    x = tf.keras.layers.Dense(16, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.Dropout(0.4)(x)
-    x = tf.keras.layers.Dense(8, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.003))(x)
-    x = tf.keras.layers.Dropout(0.4)(x)
-    # Output
+    x = tf.keras.layers.Conv1D(128, 5, padding='same', activation='relu')(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.MaxPooling1D(2)(x)
+    
+    # LSTM for temporal patterns
+    x = tf.keras.layers.LSTM(128, return_sequences=True, dropout=0.2)(x)
+    x = tf.keras.layers.LSTM(64, return_sequences=False, dropout=0.2)(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    
+    # Classification
+    x = tf.keras.layers.Dense(64, activation='relu')(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dense(32, activation='relu')(x)
+    
     outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
-
-    model = tf.keras.Model(inputs, outputs)
-    return model
+    return tf.keras.Model(inputs, outputs)
 
 def compute_fft(feature_data):
     fft_result = np.fft.fft(feature_data)
@@ -280,7 +280,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     filtered_test_labels = test_labels[val_shuffle_idx]
     
     # --- Dataset construction ---
-    batch_size = 12
+    batch_size = 64
     
     train_ds = tf.data.Dataset.from_tensor_slices((filtered_train_data, filtered_train_labels)) \
         .shuffle(buffer_size=len(train_data)) \
@@ -318,7 +318,7 @@ def train_model(train_data, train_labels, test_data, test_labels):
     steps_per_epoch = len(train_data) // batch_size
     # --- Optimizer, loss, and model ---
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=1e-4,
+        initial_learning_rate=1e-3,
         decay_steps=steps_per_epoch * 10,
         decay_rate=0.9
     )
@@ -329,13 +329,13 @@ def train_model(train_data, train_labels, test_data, test_labels):
     model.compile(optimizer=optimizer, loss=loss_fn, metrics=['accuracy'])
     
     # --- Callbacks ---
-    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=100, restore_best_weights=True)
+    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=20, restore_best_weights=True)
     
     # --- Train ---
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=300,
+        epochs=100,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=[early_stop]
@@ -605,7 +605,7 @@ def get_symbols_from_folder(base_dir):
         
 if __name__ == "__main__":
     
-    loadData = True
+    loadData = False
     loadModel = False
     days_to_process = []
 
