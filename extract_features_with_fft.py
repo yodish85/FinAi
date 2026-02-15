@@ -222,6 +222,38 @@ def add_technical_indicators(df):
     df.dropna(inplace=True)
     return df
 
+def get_prices_from_csv(ticker, data_path, num_rows):
+    """Get prices from the same CSV used for feature extraction."""
+    csv_path = os.path.join(data_path, f"{ticker}.csv")
+    
+    df = pd.read_csv(
+        csv_path,
+        skiprows=2,
+        header=0,
+        names=["Date", "Close", "High", "Low", "Open", "Volume"],
+        parse_dates=["Date"],
+    )
+    
+    # Take last num_rows to match feature extraction
+    df = df.tail(num_rows)
+    df.set_index("Date", inplace=True)
+    
+    return df
+
+def verify_csv_alignment(ticker, tr_labels, price_df):
+    """Quick verification that features and prices match."""
+    print(f"\n📊 Data Check: {ticker}")
+    print(f"   Features: {len(tr_labels)} samples")
+    print(f"   Prices:   {len(price_df)} rows")
+    print(f"   Date range: {price_df.index[0]} to {price_df.index[-1]}")
+    
+    if len(tr_labels) != len(price_df):
+        print(f"   ❌ LENGTH MISMATCH!")
+        return False
+    
+    print(f"   ✅ Lengths match\n")
+    return True
+
 def detect_and_plot_price_movements(prices, lookforward=5, up_threshold=0.10, down_threshold=-0.10, plot=True):
     """
     Detects future up/down movements by looking forward N days.
@@ -745,7 +777,7 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
         symbols.append(symbol)
     
     window_days = 60;
-    result = process_windows(processed_dfs, window_days, name, symbol_names=symbols)
+    result = process_windows(processed_dfs, window_days, name, symbol_names=symbols, use_fft=True, use_wavelets=True)
 
     if result is None:
         print(f"[Warning] Skipping processing for {symbols} — not enough valid data after filtering.")
@@ -753,44 +785,184 @@ def extract_features_with_fft(symbol_list, directory, saveData, name, days_to_pr
     else:
         raw_data_path, raw_label_path, symbol_path = result
         
-    balanced_data, balanced_labels, balanced_symbols, data, labels, symbols = balance_and_save(raw_data_path, raw_label_path, symbol_path, name, doBalance)
-
+    balanced_data, balanced_labels, balanced_symbols, data, labels, symbols = \
+    balance_and_save(raw_data_path, raw_label_path, symbol_path, name, 
+                     doBalance=True, 
+                     balance_per_ticker=True,
+                     samples_per_ticker_per_class=50) 
+    
     if doBalance:
         return balanced_data, balanced_labels, balanced_symbols
     else:
         return data, labels, symbols
 
-def balance_and_save(raw_data_path, raw_label_path, symbol_path=None, name='default', doBalance=True):
+def balance_and_save(raw_data_path, raw_label_path, symbol_path=None, name='default', doBalance=True, 
+                     balance_per_ticker=True, samples_per_ticker_per_class=None):
+    """
+    Balance dataset with option to balance per ticker or globally.
+    
+    Parameters:
+    -----------
+    balance_per_ticker : bool
+        If True, balance labels within each ticker separately to prevent any single
+        stock from dominating the training data. DEFAULT: True
+    samples_per_ticker_per_class : int or None
+        If specified, take exactly this many samples per class per ticker.
+        If None, take the minimum available across classes for each ticker.
+        Example: Set to 50 to ensure each ticker contributes equally (50 samples × 3 classes = 150 per ticker)
+    
+    Examples:
+    ---------
+    # Auto-balance per ticker (each ticker balanced independently)
+    balance_and_save(data, labels, symbols, doBalance=True, balance_per_ticker=True)
+    
+    # Force equal contribution from all tickers (50 samples per class per ticker)
+    balance_and_save(data, labels, symbols, doBalance=True, balance_per_ticker=True, 
+                     samples_per_ticker_per_class=50)
+    
+    # Old behavior (global balancing - can cause COIN dominance)
+    balance_and_save(data, labels, symbols, doBalance=True, balance_per_ticker=False)
+    """
     print("Balancing dataset...")
 
     data = np.load(raw_data_path, mmap_mode='r')
     labels = np.load(raw_label_path)
-    balanced_data = []
-    balanced_labels = []
-    balanced_symbols = []
+    
+    if not symbol_path:
+        print("Warning: No symbol path provided, falling back to global balancing")
+        balance_per_ticker = False
     
     if symbol_path:
         symbols = np.load(symbol_path, allow_pickle=True)
+    else:
+        symbols = None
     
     if doBalance:
-        class_0_idx = np.where(labels == 0)[0]
-        class_1_idx = np.where(labels == 1)[0]
-        class_2_idx = np.where(labels == 2)[0]
-    
-        min_class_size = min(len(class_0_idx), len(class_1_idx), len(class_2_idx))
-        print(f"Class sizes before balancing: 0={len(class_0_idx)}, 1={len(class_1_idx)}, 2={len(class_2_idx)}")
-        print(f"Balancing to {min_class_size} samples per class")
-    
-        np.random.seed(42)
-        balanced_indices = np.concatenate([
-            np.random.choice(class_0_idx, min_class_size, replace=False),
-            np.random.choice(class_1_idx, min_class_size, replace=False),
-            np.random.choice(class_2_idx, min_class_size, replace=False)
-        ])
-        np.random.shuffle(balanced_indices)
-    
+        if balance_per_ticker and symbols is not None:
+            # ============================================================
+            # BALANCE PER TICKER (RECOMMENDED)
+            # ============================================================
+            print("\n📊 Balancing per ticker to prevent any stock from dominating...")
+            
+            unique_symbols = np.unique(symbols)
+            print(f"Found {len(unique_symbols)} unique tickers")
+            
+            balanced_indices_list = []
+            ticker_stats = []
+            
+            for symbol in unique_symbols:
+                # Get all samples for this ticker
+                symbol_mask = symbols == symbol
+                symbol_indices = np.where(symbol_mask)[0]
+                symbol_labels = labels[symbol_indices]
+                
+                # Get indices for each class within this ticker
+                class_0_idx = symbol_indices[symbol_labels == 0]
+                class_1_idx = symbol_indices[symbol_labels == 1]
+                class_2_idx = symbol_indices[symbol_labels == 2]
+                
+                # Determine how many samples to take per class
+                available = {
+                    0: len(class_0_idx),
+                    1: len(class_1_idx),
+                    2: len(class_2_idx)
+                }
+                
+                if samples_per_ticker_per_class is not None:
+                    # Use specified amount (or maximum available if not enough)
+                    n_samples = min(samples_per_ticker_per_class, min(available.values()))
+                else:
+                    # Use minimum available for this ticker
+                    n_samples = min(available.values())
+                
+                if n_samples == 0:
+                    print(f"  ⚠️  {symbol}: Skipping (no samples in one or more classes)")
+                    continue
+                
+                # Randomly sample n_samples from each class for this ticker
+                np.random.seed(42)
+                ticker_balanced_indices = np.concatenate([
+                    np.random.choice(class_0_idx, n_samples, replace=False),
+                    np.random.choice(class_1_idx, n_samples, replace=False),
+                    np.random.choice(class_2_idx, n_samples, replace=False)
+                ])
+                
+                balanced_indices_list.append(ticker_balanced_indices)
+                
+                ticker_stats.append({
+                    'symbol': symbol,
+                    'total_samples': len(symbol_indices),
+                    'class_0': available[0],
+                    'class_1': available[1],
+                    'class_2': available[2],
+                    'balanced_per_class': n_samples,
+                    'balanced_total': n_samples * 3
+                })
+                
+                print(f"  {symbol}: {available[0]}/{available[1]}/{available[2]} → {n_samples} per class ({n_samples*3} total)")
+            
+            # Combine all balanced indices
+            balanced_indices = np.concatenate(balanced_indices_list)
+            np.random.shuffle(balanced_indices)
+            
+            # Print summary statistics
+            total_original = len(data)
+            total_balanced = len(balanced_indices)
+            
+            print(f"\n📈 Balancing Summary:")
+            print(f"  Original samples:     {total_original:,}")
+            print(f"  Balanced samples:     {total_balanced:,}")
+            print(f"  Reduction:            {(1 - total_balanced/total_original)*100:.1f}%")
+            print(f"  Tickers included:     {len(ticker_stats)}")
+            print(f"  Avg samples/ticker:   {total_balanced/len(ticker_stats):.0f}")
+            
+            # Check for ticker imbalance
+            ticker_contributions = [stat['balanced_total'] for stat in ticker_stats]
+            max_contribution = max(ticker_contributions)
+            min_contribution = min(ticker_contributions)
+            
+            print(f"\n  Per-ticker contribution:")
+            print(f"    Min: {min_contribution} samples")
+            print(f"    Max: {max_contribution} samples")
+            print(f"    Ratio (max/min): {max_contribution/min_contribution:.2f}x")
+            
+            if max_contribution / min_contribution > 2:
+                print(f"\n  ⚠️  Ticker imbalance detected (ratio > 2x)")
+                print(f"     Consider setting samples_per_ticker_per_class=50")
+                print(f"     This will force equal contribution from all tickers")
+            else:
+                print(f"\n  ✅ Good ticker balance!")
+            
+        else:
+            # ============================================================
+            # GLOBAL BALANCING (original method - can cause dominance)
+            # ============================================================
+            print("\n📊 Global balancing (all tickers combined)...")
+            print("⚠️  This may allow some tickers to dominate the dataset")
+            
+            class_0_idx = np.where(labels == 0)[0]
+            class_1_idx = np.where(labels == 1)[0]
+            class_2_idx = np.where(labels == 2)[0]
+        
+            min_class_size = min(len(class_0_idx), len(class_1_idx), len(class_2_idx))
+            print(f"Class sizes: 0={len(class_0_idx)}, 1={len(class_1_idx)}, 2={len(class_2_idx)}")
+            print(f"Balancing to {min_class_size} samples per class")
+        
+            np.random.seed(42)
+            balanced_indices = np.concatenate([
+                np.random.choice(class_0_idx, min_class_size, replace=False),
+                np.random.choice(class_1_idx, min_class_size, replace=False),
+                np.random.choice(class_2_idx, min_class_size, replace=False)
+            ])
+            np.random.shuffle(balanced_indices)
+        
         balanced_data = data[balanced_indices]
         balanced_labels = labels[balanced_indices]
+        
+        if symbols is not None:
+            balanced_symbols = symbols[balanced_indices]
+        else:
+            balanced_symbols = None
     
         # Save balanced data
         subdir = "daily_data/" if name == "daily" else ""
@@ -804,15 +976,43 @@ def balance_and_save(raw_data_path, raw_label_path, symbol_path=None, name='defa
         np.save(data_path, balanced_data)
         np.save(label_path, balanced_labels)
     
-        if symbol_path:
-            balanced_symbols = symbols[balanced_indices]
+        if balanced_symbols is not None:
             symbol_balanced_path = f"train-val-data/{name}_balanced_symbols_{ts}.npy"
             np.save(symbol_balanced_path, balanced_symbols)
-            print(f"Saved balanced symbols: {symbol_balanced_path}")
+            print(f"\n💾 Saved balanced symbols: {symbol_balanced_path}")
     
-        print("Balanced data saved:")
-        print(f" - Features: {data_path}")
-        print(f" - Labels: {label_path}")
+        print("\n💾 Balanced data saved:")
+        print(f"   Features: {data_path}")
+        print(f"   Labels:   {label_path}")
+        
+        # Final verification
+        if balanced_symbols is not None:
+            unique_after = np.unique(balanced_symbols)
+            print(f"\n✅ Final verification:")
+            print(f"   Unique tickers in balanced data: {len(unique_after)}")
+            
+            # Count samples per ticker in final dataset
+            ticker_counts = {ticker: np.sum(balanced_symbols == ticker) for ticker in unique_after}
+            print(f"   Samples per ticker range: {min(ticker_counts.values())} - {max(ticker_counts.values())}")
+            
+            # Show ticker distribution
+            print(f"\n📊 Ticker distribution in final dataset:")
+            ticker_pcts = {ticker: count/len(balanced_symbols)*100 for ticker, count in ticker_counts.items()}
+            sorted_tickers = sorted(ticker_pcts.items(), key=lambda x: x[1], reverse=True)
+            
+            print(f"   Top 5 contributors:")
+            for ticker, pct in sorted_tickers[:5]:
+                print(f"     {ticker}: {ticker_counts[ticker]} samples ({pct:.1f}%)")
+            
+            if len(sorted_tickers) > 5:
+                print(f"   Bottom 5 contributors:")
+                for ticker, pct in sorted_tickers[-5:]:
+                    print(f"     {ticker}: {ticker_counts[ticker]} samples ({pct:.1f}%)")
+    
+    else:
+        balanced_data = data
+        balanced_labels = labels
+        balanced_symbols = symbols
     
     return balanced_data, balanced_labels, balanced_symbols, data, labels, symbols
 

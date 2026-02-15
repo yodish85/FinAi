@@ -148,6 +148,9 @@ class TradeSimulator:
         if self.open_position is None:
             return False
         
+        if current_idx <= self.open_position['entry_idx']:
+            return False
+    
         self.open_position['days_held'] = current_idx - self.open_position['entry_idx']
         
         entry_price = self.open_position['entry_price']
@@ -363,7 +366,6 @@ class TradeSimulator:
         
         return float(drawdown.min())
 
-
 def run_backtest_corrected(ticker, close_prices, open_prices, dates, 
                            buy_mask, sell_mask, initial_capital=10000):
     """Corrected backtest loop with proper timing."""
@@ -381,11 +383,12 @@ def run_backtest_corrected(ticker, close_prices, open_prices, dates,
         current_close = close_prices[i]
         next_open = open_prices[i + 1]
         
-        # Check exit first
+        # ⭐ CRITICAL: Check exit BEFORE checking for new signals ⭐
         if simulator.open_position is not None:
             simulator.check_and_exit(i, current_close, next_open, dates)
         
-        # Check for new signals
+        # ⭐ NEW: Only check for new signals if no position is open ⭐
+        # This ensures we don't enter on the same day we exit
         if simulator.open_position is None:
             if buy_mask[i]:
                 simulator.process_signal(i, 'buy', next_open, dates)
@@ -420,6 +423,15 @@ def verify_trade_timing(trades_df):
         entry_date = trade['entry_date']
         exit_signal_date = trade['exit_signal_date']
         exit_date = trade['exit_date']
+        
+        # ⭐ ADD THIS CHECK ⭐
+        # Check for same-day entry and exit (invalid!)
+        if entry_date == exit_signal_date:
+            print(f"❌ Trade {idx}: SAME DAY entry and exit signal!")
+            print(f"   Entry: {entry_date}, Exit signal: {exit_signal_date}")
+            print(f"   This indicates lookahead bias!")
+            all_valid = False
+        # ⭐ END OF NEW CHECK ⭐
         
         # Entry should be 1 business day after signal
         if pd.notna(signal_date):
@@ -621,7 +633,7 @@ if __name__ == "__main__":
     model = daily_check.load_model(model_path)
     
     # Test on specific tickers
-    #tickers = ["AMD", "REGN", "TKO", "XYZ", "EMR", "SLTD"]
+    tickers = ["INTC", "WDC", "CCL", "EXPE"]
     
     portfolio_results = {}
     
@@ -647,26 +659,23 @@ if __name__ == "__main__":
         tr_data, tr_labels, tr_symbols = result
         
         # Get price data
-        df = yf.download(ticker, start='2015-01-01', progress=False)
-        if df.empty:
-            print(f"[Warning] No price data for {ticker}")
-            continue
+        price_df = extract_features_with_fft.get_prices_from_csv(ticker, data_path, len(tr_labels))
         
-        aligned_close = df["Close"].iloc[-len(tr_labels):]
-        aligned_open = df["Open"].iloc[-len(tr_labels):]
+        aligned_close = price_df["Close"].to_numpy()
+        aligned_open = price_df["Open"].to_numpy()
+        aligned_dates = price_df.index.to_numpy()
         
-        if len(aligned_close) != len(tr_labels):
+        if not extract_features_with_fft.verify_csv_alignment(ticker, tr_labels, price_df):
             print(f"[Error] Data mismatch for {ticker}")
             continue
         
         print(f"Data points: {len(tr_labels)}")
-        print(f"Date range: {aligned_close.index[0]} to {aligned_close.index[-1]}")
         
         # Predict
         pred_test = model.predict(tr_data, verbose=0)
         
         # Generate signals
-        conf_th = 0.7
+        conf_th = 0.85
         res = directional_confidence_signals(pred_test, trend_window=3, conf_th=conf_th)
         buy_mask = res['buy_mask']
         sell_mask = res['sell_mask']
@@ -674,14 +683,13 @@ if __name__ == "__main__":
         # Run backtest with corrected simulator
         simulator = run_backtest_corrected(
             ticker=ticker,
-            close_prices=aligned_close.to_numpy(),
-            open_prices=aligned_open.to_numpy(),
-            dates=aligned_close.index,
+            close_prices=aligned_close,
+            open_prices=aligned_open,
+            dates=aligned_dates,
             buy_mask=buy_mask,
             sell_mask=sell_mask,
             initial_capital=initial_capital
         )
-        
         # Get results
         summary, trades_df = simulator.get_performance_summary()
         portfolio_results[ticker] = summary
@@ -710,12 +718,12 @@ if __name__ == "__main__":
         plt.figure(figsize=(14, 8))
         
         plt.subplot(2, 1, 1)
-        plt.plot(aligned_close, label='Price', linewidth=1.5)
+        plt.plot(aligned_dates, aligned_close, label='Price', linewidth=1.5)  # ✓ Correct
         buy_idx = res['buy_idx']
         sell_idx = res['sell_idx']
-        plt.plot(aligned_close.index[buy_idx], aligned_close.iloc[buy_idx],
+        plt.plot(aligned_dates[buy_idx], aligned_close[buy_idx],  # ✓ Correct
                  'g^', markersize=10, label='Buy Signal', alpha=0.7)
-        plt.plot(aligned_close.index[sell_idx], aligned_close.iloc[sell_idx],
+        plt.plot(aligned_dates[sell_idx], aligned_close[sell_idx],  # ✓ Correct
                  'rv', markersize=10, label='Sell Signal', alpha=0.7)
         plt.title(f'{ticker} - Signals and Price Action')
         plt.ylabel('Price ($)')
@@ -725,7 +733,7 @@ if __name__ == "__main__":
         plt.subplot(2, 1, 2)
         if summary['total_trades'] > 0:
             equity_values = [initial_capital]
-            equity_dates = [aligned_close.index[0]]
+            equity_dates = [aligned_dates[0]]
             current_capital = initial_capital
             
             for _, trade in trades_df.iterrows():
@@ -736,7 +744,7 @@ if __name__ == "__main__":
                 equity_dates.append(trade['exit_date'])
             
             equity_values.append(current_capital)
-            equity_dates.append(aligned_close.index[-1])
+            equity_dates.append(aligned_dates[-1])
             
             plt.plot(equity_dates, equity_values, 'b-', linewidth=2, label='Portfolio Value', drawstyle='steps-post')
             plt.axhline(y=initial_capital, color='gray', linestyle='--', alpha=0.5, label='Starting Capital')

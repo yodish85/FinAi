@@ -183,9 +183,10 @@ if __name__ == "__main__":
         tr_labels = np.array(tr_labels)
 
         # Load price history
-        df = yf.download(ticker, start='2015-01-01')
-        if df.empty:
-            print(f"[Warning] No price data for {ticker}")
+        df = extract_features_with_fft.get_prices_from_csv(ticker, data_path, len(tr_labels))
+        
+        if not extract_features_with_fft.verify_csv_alignment(ticker, tr_labels, df):
+            print(f"[Error] Data mismatch for {ticker}")
             continue
 
         # Align prices with tr_labels (fixes misalignment)
